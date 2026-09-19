@@ -23,6 +23,11 @@ const MAX_CHUNK_CHARS = 6000;
 const MAX_INPUT_CHARS = 180000; // ~45k tokens of raw study material per request
 const MAX_CHUNKS_PER_REQUEST = 40;
 
+// A short prompt (a question, or a bare topic) is treated as something to
+// research rather than a document to summarize - see `researchQuestion()`.
+const QUESTION_MODE_CHAR_THRESHOLD = 400;
+const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: 5 };
+
 for (const key of ["DATABASE_URL", "SESSION_SECRET"]) {
   if (!process.env[key]) {
     console.warn(`[novalis-ai] ${key} is not set. Sign-in will fail until it is configured (see .env.example).`);
@@ -180,6 +185,38 @@ Non-negotiable rules:
 
 Return only the structured study package. Do not include any commentary outside the schema.`;
 
+const RESEARCH_SYSTEM_PROMPT = `You are a meticulous research assistant preparing background notes for a study-content generator. A student has asked a short question or named a topic - there is no source document, so you must research it yourself.
+
+Write a thorough, accurate, well-organized set of notes that fully answers it: key facts, dates, causes, mechanisms, and consequences as relevant to the topic. Use the web_search tool whenever you are not fully certain of a specific fact, date, figure, or anything that may have changed recently - do not guess or rely on shaky memory for specifics you can verify.
+
+Write in plain prose paragraphs, not JSON, not bullet points. Be comprehensive but precise - no filler, no hedging, no meta-commentary about being an AI. These notes will be fed directly into another step that turns them into a summary, flashcards, a quiz and a podcast script, so make sure every fact a good study package would need is actually present.`;
+
+/**
+ * For a short question/topic (no pasted source material), research it with
+ * live web search first, then feed the resulting notes into the same
+ * packaging step used for real documents. This keeps the "only state facts
+ * that are in the supplied material" rule in the main system prompt fully
+ * intact and safe - the researched notes simply become that material,
+ * instead of quietly loosening the anti-hallucination rule for this path.
+ */
+async function researchQuestion(question) {
+  const response = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 4000,
+    system: RESEARCH_SYSTEM_PROMPT,
+    tools: [WEB_SEARCH_TOOL],
+    messages: [{ role: "user", content: question }],
+  });
+
+  const notes = response.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("\n\n")
+    .trim();
+
+  return notes;
+}
+
 // ---------------------------------------------------------------------------
 // Express app
 // ---------------------------------------------------------------------------
@@ -221,6 +258,7 @@ app.post("/api/process-study-material", async (req, res) => {
 
     const userContent = [];
     let segmentCount = 0;
+    let mode = "document";
 
     if (documentBase64) {
       if (mimeType !== "application/pdf") {
@@ -249,21 +287,37 @@ app.post("/api/process-study-material", async (req, res) => {
         });
       }
 
-      const chunks = chunkText(text);
-      if (chunks.length > MAX_CHUNKS_PER_REQUEST) {
-        return res.status(413).json({
-          error: `Study material segmented into ${chunks.length} chunks, which exceeds the ${MAX_CHUNKS_PER_REQUEST}-chunk limit for a single request. Please split it into smaller sections.`,
+      const trimmedText = text.trim();
+      const isQuestion = trimmedText.length < QUESTION_MODE_CHAR_THRESHOLD;
+
+      if (isQuestion) {
+        mode = "question";
+        const researchNotes = await researchQuestion(trimmedText);
+        segmentCount = 1;
+        userContent.push({
+          type: "text",
+          text: `${subject ? `Subject: ${subject}\n` : ""}The student asked: "${trimmedText}"\n\nHere is researched background information to answer it accurately:\n\n${
+            researchNotes || "(No additional research came back - answer from the question itself as best you can.)"
+          }\n\nBuild the full study package described in your instructions, directly answering the student's question.`,
+        });
+      } else {
+        mode = "source";
+        const chunks = chunkText(text);
+        if (chunks.length > MAX_CHUNKS_PER_REQUEST) {
+          return res.status(413).json({
+            error: `Study material segmented into ${chunks.length} chunks, which exceeds the ${MAX_CHUNKS_PER_REQUEST}-chunk limit for a single request. Please split it into smaller sections.`,
+          });
+        }
+        segmentCount = chunks.length;
+
+        const segmentedContext = buildSegmentedContext(chunks);
+        userContent.push({
+          type: "text",
+          text: `${
+            subject ? `Subject: ${subject}\n` : ""
+          }${fileName ? `Source: ${fileName}\n` : ""}Below is the study material, already segmented by the retrieval pipeline:\n\n${segmentedContext}\n\nBuild the full study package described in your instructions.`,
         });
       }
-      segmentCount = chunks.length;
-
-      const segmentedContext = buildSegmentedContext(chunks);
-      userContent.push({
-        type: "text",
-        text: `${
-          subject ? `Subject: ${subject}\n` : ""
-        }${fileName ? `Source: ${fileName}\n` : ""}Below is the study material, already segmented by the retrieval pipeline:\n\n${segmentedContext}\n\nBuild the full study package described in your instructions.`,
-      });
     }
 
     const response = await anthropic.messages.parse({
@@ -287,6 +341,7 @@ app.post("/api/process-study-material", async (req, res) => {
       ...response.parsed_output,
       meta: {
         model: response.model,
+        mode,
         segments: segmentCount,
         inputTokens: response.usage?.input_tokens ?? null,
         outputTokens: response.usage?.output_tokens ?? null,
