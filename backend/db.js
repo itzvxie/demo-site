@@ -35,6 +35,8 @@ const SCHEMA_SQL = `
   );
 
   alter table users add column if not exists password_hash text;
+  alter table users add column if not exists reset_token_hash text;
+  alter table users add column if not exists reset_token_expires_at timestamptz;
 `;
 
 export async function migrate() {
@@ -71,6 +73,34 @@ export async function createUserWithPassword({ email, passwordHash, firstName })
      on conflict (email) do nothing
      returning *`,
     [email, firstName || null, passwordHash],
+  );
+  return result.rows[0] || null;
+}
+
+export async function setPasswordResetToken(userId, tokenHash, expiresAt) {
+  await query(
+    "update users set reset_token_hash = $2, reset_token_expires_at = $3 where id = $1",
+    [userId, tokenHash, expiresAt],
+  );
+}
+
+/** Looks up a user by a hashed reset token, honoring expiry in the query itself. */
+export async function findUserByResetTokenHash(tokenHash) {
+  const result = await query(
+    "select * from users where reset_token_hash = $1 and reset_token_expires_at > now()",
+    [tokenHash],
+  );
+  return result.rows[0] || null;
+}
+
+/** Sets a new password and invalidates the reset token in one step, so a token can never be reused. */
+export async function resetUserPassword(userId, passwordHash) {
+  const result = await query(
+    `update users
+     set password_hash = $2, reset_token_hash = null, reset_token_expires_at = null
+     where id = $1
+     returning *`,
+    [userId, passwordHash],
   );
   return result.rows[0] || null;
 }
