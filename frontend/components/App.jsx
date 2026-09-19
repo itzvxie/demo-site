@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, CheckCircle2, Eye, EyeOff, Loader2, Lock, Mail, Sparkles } from "lucide-react";
 import DashboardWorkspace from "@/components/DashboardWorkspace";
@@ -10,8 +11,16 @@ import { fetchSession, forgotPassword, login, logout, signup, updateProfile } fr
 const ONBOARDING_STEPS = ["name", "goal", "subject"];
 
 export default function App() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  // Driving the landing/signup/login/forgot screens off a URL query param
+  // (rather than plain component state) is what lets the browser's own
+  // back/forward buttons move between them - Next's router manages the
+  // history entries, so there's no fighting its own popstate handling.
+  const screen = searchParams.get("screen");
+  const hasEnteredAuth = Boolean(screen);
+
   const [checkingSession, setCheckingSession] = useState(true);
-  const [hasEnteredAuth, setHasEnteredAuth] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
   const [user, setUser] = useState({
@@ -34,10 +43,17 @@ export default function App() {
       .finally(() => setCheckingSession(false));
   }, []);
 
+  function enterAuth() {
+    router.push("/?screen=signup", { scroll: false });
+  }
+
   function handleAuthenticated({ user: sessionUser, isNewUser: newUserFlag }) {
     setUser((prev) => ({ ...prev, firstName: sessionUser.firstName || "" }));
     setIsAuthenticated(true);
     setIsNewUser(Boolean(newUserFlag));
+    // Clear ?screen=... now that we're past it, so a later sign-out lands
+    // cleanly back on the landing screen instead of re-showing login/signup.
+    router.replace("/", { scroll: false });
   }
 
   async function completeOnboarding(profile) {
@@ -57,6 +73,7 @@ export default function App() {
       setIsAuthenticated(false);
       setIsNewUser(false);
       setUser({ firstName: "", goal: null, subject: "chemistry" });
+      router.replace("/?screen=login", { scroll: false });
     }
   }
 
@@ -72,9 +89,9 @@ export default function App() {
     return (
       <AnimatePresence mode="wait">
         {!hasEnteredAuth ? (
-          <LandingIntro key="landing" onContinue={() => setHasEnteredAuth(true)} />
+          <LandingIntro key="landing" onContinue={enterAuth} />
         ) : (
-          <AuthScreen key="auth" onAuthenticated={handleAuthenticated} />
+          <AuthScreen key="auth" screen={screen} onAuthenticated={handleAuthenticated} />
         )}
       </AnimatePresence>
     );
@@ -213,8 +230,12 @@ function LandingIntro({ onContinue }) {
 
 const MIN_PASSWORD_LENGTH = 8;
 
-function AuthScreen({ onAuthenticated }) {
-  const [mode, setMode] = useState("signup"); // signup | login | forgot
+function AuthScreen({ screen, onAuthenticated }) {
+  const router = useRouter();
+  // Driven by the ?screen= URL param (see App above) so the browser's own
+  // back/forward buttons step between signup, login and forgot-password.
+  const mode = screen === "login" || screen === "forgot" ? screen : "signup";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -231,13 +252,18 @@ function AuthScreen({ onAuthenticated }) {
     return () => clearInterval(timer);
   }, [resendCooldown]);
 
-  function switchMode(nextMode) {
-    setMode(nextMode);
+  // Reset transient UI state whenever the mode changes - including via
+  // browser back/forward, which lands here through the `screen` prop.
+  useEffect(() => {
     setPassword("");
     setConfirmPassword("");
     setError(null);
     setForgotSubmitted(false);
     setResendCooldown(0);
+  }, [mode]);
+
+  function switchMode(nextMode) {
+    router.push(`/?screen=${nextMode}`, { scroll: false });
   }
 
   async function handleResend() {
