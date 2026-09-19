@@ -1,50 +1,33 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowLeft, ArrowRight, Loader2, Mail, Sparkles } from "lucide-react";
 import DashboardWorkspace from "@/components/DashboardWorkspace";
 import { GOALS, SUBJECTS } from "@/lib/subjects";
-import {
-  fetchSession,
-  logout,
-  requestEmailCode,
-  updateProfile,
-  verifyEmailCode,
-  verifyGoogleToken,
-} from "@/lib/auth";
+import { fetchSession, logout, requestEmailCode, updateProfile, verifyEmailCode } from "@/lib/auth";
 
 const ONBOARDING_STEPS = ["name", "goal", "subject"];
 
 export default function App() {
   const [checkingSession, setCheckingSession] = useState(true);
+  const [hasEnteredAuth, setHasEnteredAuth] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isNewUser, setIsNewUser] = useState(false);
-  const [authError, setAuthError] = useState(null);
   const [user, setUser] = useState({
     firstName: "",
     goal: null,
     subject: "chemistry",
   });
 
-  // On load: pick up an existing session cookie (returning visitor), or the
-  // result of an Apple Sign In redirect, which lands back here as a full
-  // page navigation with `?newUser=1` / `?authError=apple` on the URL.
+  // On load: pick up an existing session cookie, so a returning visitor
+  // skips straight past the landing/auth screens into the dashboard.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const appleNewUser = params.get("newUser") === "1";
-    const appleError = params.get("authError");
-    if (appleNewUser || appleError) {
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-    if (appleError) setAuthError(appleError);
-
     fetchSession()
       .then((data) => {
         if (data?.user) {
           setUser((prev) => ({ ...prev, firstName: data.user.firstName || "" }));
           setIsAuthenticated(true);
-          setIsNewUser(appleNewUser);
         }
       })
       .catch(() => {})
@@ -55,7 +38,6 @@ export default function App() {
     setUser((prev) => ({ ...prev, firstName: sessionUser.firstName || "" }));
     setIsAuthenticated(true);
     setIsNewUser(Boolean(newUserFlag));
-    setAuthError(null);
   }
 
   async function completeOnboarding(profile) {
@@ -87,7 +69,15 @@ export default function App() {
   }
 
   if (!isAuthenticated) {
-    return <AuthScreen onAuthenticated={handleAuthenticated} authError={authError} />;
+    return (
+      <AnimatePresence mode="wait">
+        {!hasEnteredAuth ? (
+          <LandingIntro key="landing" onContinue={() => setHasEnteredAuth(true)} />
+        ) : (
+          <AuthScreen key="auth" onAuthenticated={handleAuthenticated} />
+        )}
+      </AnimatePresence>
+    );
   }
 
   return (
@@ -110,32 +100,119 @@ export default function App() {
 }
 
 // ---------------------------------------------------------------------------
-// Authentication view
+// Landing intro
 // ---------------------------------------------------------------------------
 
-const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
-const APPLE_CLIENT_ID = process.env.NEXT_PUBLIC_APPLE_CLIENT_ID || "";
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:4000";
+const CAPABILITY_CHIPS = [
+  { emoji: "🧮", label: "Solve", top: "22%", left: "10%" },
+  { emoji: "🃏", label: "Flashcards", top: "28%", left: "82%" },
+  { emoji: "🎧", label: "Podcast", top: "72%", left: "13%" },
+  { emoji: "📅", label: "Study Plan", top: "76%", left: "84%" },
+];
 
-function loadScriptOnce(src, globalCheck) {
-  return new Promise((resolve, reject) => {
-    if (typeof window !== "undefined" && globalCheck()) return resolve();
-    const existing = document.querySelector(`script[src="${src}"]`);
-    if (existing) {
-      existing.addEventListener("load", () => resolve());
-      existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)));
-      return;
-    }
-    const script = document.createElement("script");
-    script.src = src;
-    script.async = true;
-    script.onload = () => resolve();
-    script.onerror = () => reject(new Error(`Failed to load ${src}`));
-    document.head.appendChild(script);
-  });
+function LandingIntro({ onContinue }) {
+  return (
+    <motion.div
+      exit={{ opacity: 0, scale: 1.04, filter: "blur(10px)" }}
+      transition={{ duration: 0.5, ease: "easeInOut" }}
+      className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-zinc-950 px-6 text-center"
+    >
+      <motion.div
+        aria-hidden
+        className="pointer-events-none absolute left-1/2 top-1/2 h-[36rem] w-[36rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-br from-indigo-500/40 via-fuchsia-500/20 to-transparent blur-3xl"
+        animate={{ scale: [1, 1.15, 1], opacity: [0.45, 0.75, 0.45] }}
+        transition={{ duration: 8, repeat: Infinity, ease: "easeInOut" }}
+      />
+      <motion.div
+        aria-hidden
+        className="pointer-events-none absolute left-1/3 top-2/3 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-400/20 blur-3xl"
+        animate={{ scale: [1, 1.25, 1], opacity: [0.3, 0.5, 0.3] }}
+        transition={{ duration: 10, repeat: Infinity, ease: "easeInOut", delay: 1 }}
+      />
+
+      <div className="pointer-events-none absolute inset-0 hidden sm:block">
+        {CAPABILITY_CHIPS.map((chip, i) => (
+          <motion.div
+            key={chip.label}
+            className="absolute flex items-center gap-1.5 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-zinc-300 backdrop-blur"
+            style={{ top: chip.top, left: chip.left }}
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: [0, 1, 1, 0.6], y: [16, 0, 0, -12] }}
+            transition={{ duration: 6, delay: 0.6 + i * 0.35, repeat: Infinity, repeatType: "mirror", ease: "easeInOut" }}
+          >
+            <span>{chip.emoji}</span>
+            {chip.label}
+          </motion.div>
+        ))}
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, scale: 0.5, rotate: -15 }}
+        animate={{ opacity: 1, scale: 1, rotate: 0 }}
+        transition={{ type: "spring", stiffness: 120, damping: 12, delay: 0.1 }}
+        className="relative z-10 mb-8 flex h-16 w-16 items-center justify-center rounded-3xl border border-white/10 bg-white/5 backdrop-blur"
+      >
+        <Sparkles className="h-8 w-8 text-indigo-300" />
+      </motion.div>
+
+      <div className="relative z-10 overflow-hidden py-1">
+        <motion.h1
+          initial={{ y: "100%", opacity: 0, filter: "blur(12px)" }}
+          animate={{ y: 0, opacity: 1, filter: "blur(0px)" }}
+          transition={{ duration: 0.8, delay: 0.25, ease: [0.16, 1, 0.3, 1] }}
+          className="bg-gradient-to-b from-zinc-50 to-zinc-400 bg-clip-text font-display text-6xl font-extrabold tracking-tight text-transparent sm:text-7xl"
+        >
+          Novalis AI
+        </motion.h1>
+      </div>
+
+      <motion.p
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, delay: 0.6 }}
+        className="relative z-10 mt-5 max-w-md text-base text-zinc-400"
+      >
+        Solve, memorize, quiz and revise&nbsp;&mdash; your entire study workflow, rebuilt around one conversation.
+      </motion.p>
+
+      <motion.button
+        type="button"
+        onClick={onContinue}
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, delay: 0.9 }}
+        whileHover={{ scale: 1.03 }}
+        whileTap={{ scale: 0.97 }}
+        className="relative z-10 mt-10 flex items-center gap-2 overflow-hidden rounded-full bg-gradient-to-r from-indigo-500 to-fuchsia-500 px-8 py-4 text-base font-semibold text-white shadow-xl shadow-indigo-500/30"
+      >
+        <motion.span
+          aria-hidden
+          className="absolute inset-0 rounded-full bg-white/20"
+          animate={{ opacity: [0, 0.35, 0], scale: [1, 1.4, 1.4] }}
+          transition={{ duration: 2.4, repeat: Infinity, ease: "easeOut" }}
+        />
+        <span className="relative">Start Learning</span>
+        <ArrowRight className="relative h-5 w-5" />
+      </motion.button>
+
+      <motion.p
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 1.3 }}
+        className="relative z-10 mt-6 text-xs text-zinc-600"
+      >
+        Free to start &middot; No credit card required
+      </motion.p>
+    </motion.div>
+  );
 }
 
-function AuthScreen({ onAuthenticated, authError }) {
+// ---------------------------------------------------------------------------
+// Authentication view - email only, with a sign up / log in toggle
+// ---------------------------------------------------------------------------
+
+function AuthScreen({ onAuthenticated }) {
+  const [mode, setMode] = useState("signup"); // signup | login
   const [emailStep, setEmailStep] = useState("idle"); // idle | sent
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -143,85 +220,11 @@ function AuthScreen({ onAuthenticated, authError }) {
   const [error, setError] = useState(null);
   const [cooldown, setCooldown] = useState(0);
 
-  const googleButtonRef = useRef(null);
-
-  useEffect(() => {
-    if (authError === "apple") {
-      setError("Apple sign-in didn't go through. Please try again.");
-    }
-  }, [authError]);
-
-  // Real Google Identity Services button - Google renders its own official
-  // logo and label, so there is no icon of ours to embed here.
-  useEffect(() => {
-    if (!GOOGLE_CLIENT_ID) return;
-    let cancelled = false;
-
-    loadScriptOnce("https://accounts.google.com/gsi/client", () => window.google?.accounts?.id)
-      .then(() => {
-        if (cancelled || !googleButtonRef.current) return;
-        window.google.accounts.id.initialize({
-          client_id: GOOGLE_CLIENT_ID,
-          callback: async (response) => {
-            setIsSubmitting(true);
-            setError(null);
-            try {
-              const data = await verifyGoogleToken(response.credential);
-              onAuthenticated(data);
-            } catch (err) {
-              setError(err.message || "Google sign-in failed.");
-            } finally {
-              setIsSubmitting(false);
-            }
-          },
-        });
-        window.google.accounts.id.renderButton(googleButtonRef.current, {
-          type: "standard",
-          theme: "filled_black",
-          size: "large",
-          shape: "pill",
-          width: 320,
-          logo_alignment: "left",
-        });
-      })
-      .catch(() => setError("Couldn't load Google Sign-In. Check your connection and reload."));
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!APPLE_CLIENT_ID) return;
-    loadScriptOnce(
-      "https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js",
-      () => window.AppleID?.auth,
-    )
-      .then(() => {
-        window.AppleID.auth.init({
-          clientId: APPLE_CLIENT_ID,
-          scope: "name email",
-          redirectURI: `${API_BASE_URL}/api/auth/apple/callback`,
-          usePopup: false,
-        });
-      })
-      .catch(() => {});
-  }, []);
-
   useEffect(() => {
     if (cooldown <= 0) return undefined;
     const timer = setTimeout(() => setCooldown((s) => s - 1), 1000);
     return () => clearTimeout(timer);
   }, [cooldown]);
-
-  function handleAppleClick() {
-    if (!APPLE_CLIENT_ID) {
-      setError("Apple sign-in isn't configured on this deployment yet.");
-      return;
-    }
-    window.AppleID?.auth?.signIn();
-  }
 
   async function handleSendCode(event) {
     event.preventDefault();
@@ -255,7 +258,13 @@ function AuthScreen({ onAuthenticated, authError }) {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-zinc-950 px-6 py-16">
+    <motion.div
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ duration: 0.4, ease: "easeOut" }}
+      className="relative flex min-h-screen items-center justify-center overflow-hidden bg-zinc-950 px-6 py-16"
+    >
       <motion.div
         aria-hidden
         className="pointer-events-none absolute left-1/2 top-1/2 h-[36rem] w-[36rem] -translate-x-1/2 -translate-y-1/2 rounded-full bg-gradient-to-br from-indigo-500/40 via-fuchsia-500/20 to-transparent blur-3xl"
@@ -272,41 +281,33 @@ function AuthScreen({ onAuthenticated, authError }) {
       <motion.div
         initial={{ opacity: 0, y: 24 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7, ease: "easeOut" }}
+        transition={{ duration: 0.5, delay: 0.15, ease: "easeOut" }}
         className="relative z-10 flex w-full max-w-sm flex-col items-center text-center"
       >
-        <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 backdrop-blur">
-          <Sparkles className="h-6 w-6 text-indigo-300" />
+        <div className="mb-6 flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 backdrop-blur">
+          <Sparkles className="h-5 w-5 text-indigo-300" />
         </div>
 
-        <h1 className="bg-gradient-to-b from-zinc-50 to-zinc-400 bg-clip-text font-display text-5xl font-extrabold tracking-tight text-transparent sm:text-6xl">
-          Novalis AI
-        </h1>
-        <p className="mt-4 text-sm leading-relaxed text-zinc-400">
-          Your entire study workflow, rebuilt around one conversation.
-          Solve, memorize, quiz and revise&nbsp;&mdash; all in one premium
-          workspace.
-        </p>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={mode}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.2 }}
+          >
+            <h1 className="font-display text-2xl font-bold text-zinc-100">
+              {mode === "signup" ? "Create your account" : "Welcome back"}
+            </h1>
+            <p className="mt-2 text-sm text-zinc-500">
+              {mode === "signup"
+                ? "Start studying smarter in under a minute."
+                : "Sign in to pick up where you left off."}
+            </p>
+          </motion.div>
+        </AnimatePresence>
 
-        <div className="mt-10 flex w-full flex-col items-center gap-3">
-          {GOOGLE_CLIENT_ID ? (
-            <div ref={googleButtonRef} className="w-[320px] max-w-full overflow-hidden rounded-full" />
-          ) : (
-            <DisabledAuthButton label="Continue with Google" hint="Google sign-in isn't configured yet" />
-          )}
-
-          {APPLE_CLIENT_ID ? (
-            <AppleButton onClick={handleAppleClick} />
-          ) : (
-            <DisabledAuthButton label="Continue with Apple" hint="Apple sign-in isn't configured yet" />
-          )}
-
-          <div className="my-1 flex w-full items-center gap-3 text-[11px] uppercase tracking-wide text-zinc-600">
-            <span className="h-px flex-1 bg-white/10" />
-            or
-            <span className="h-px flex-1 bg-white/10" />
-          </div>
-
+        <div className="mt-8 flex w-full flex-col items-center gap-3">
           <AnimatePresence mode="wait">
             {emailStep === "idle" ? (
               <motion.form
@@ -395,45 +396,32 @@ function AuthScreen({ onAuthenticated, authError }) {
 
         {error && <p className="mt-4 text-xs text-rose-400">{error}</p>}
 
-        <p className="mt-8 text-xs text-zinc-600">
+        <button
+          type="button"
+          onClick={() => {
+            setMode((m) => (m === "signup" ? "login" : "signup"));
+            setEmailStep("idle");
+            setCode("");
+            setError(null);
+          }}
+          className="mt-6 text-xs text-zinc-500 hover:text-zinc-300"
+        >
+          {mode === "signup" ? (
+            <>
+              Already have an account? <span className="font-medium text-indigo-300">Log in</span>
+            </>
+          ) : (
+            <>
+              New here? <span className="font-medium text-indigo-300">Sign up</span>
+            </>
+          )}
+        </button>
+
+        <p className="mt-6 text-xs text-zinc-600">
           By continuing you agree to Novalis AI&rsquo;s Terms &amp; Privacy Policy.
         </p>
       </motion.div>
-    </div>
-  );
-}
-
-function DisabledAuthButton({ label, hint }) {
-  return (
-    <button
-      type="button"
-      disabled
-      title={hint}
-      className="flex w-[320px] max-w-full cursor-not-allowed items-center justify-center gap-3 rounded-full border border-white/5 bg-white/[0.02] px-5 py-3.5 text-sm font-medium text-zinc-600"
-    >
-      {label}
-    </button>
-  );
-}
-
-function AppleButton({ onClick }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-[320px] max-w-full items-center justify-center gap-2 rounded-full bg-white px-5 py-3.5 text-sm font-medium text-black transition-opacity hover:opacity-90"
-    >
-      <AppleLogoIcon className="h-4 w-4" />
-      Continue with Apple
-    </button>
-  );
-}
-
-function AppleLogoIcon({ className }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden="true">
-      <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.416-2.09-3.614-2.324-4.386-2.376-2-.156-3.675 1.09-4.61 1.09zm3.632-3.325c.843-1.012 1.4-2.427 1.245-3.831-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701" />
-    </svg>
+    </motion.div>
   );
 }
 
