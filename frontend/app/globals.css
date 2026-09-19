@@ -17,6 +17,23 @@ body {
   scrollbar-color: rgba(161, 161, 170, 0.4) transparent;
 }
 
+/* Tailwind's preflight resets buttons to the default arrow cursor - restore
+   the hand cursor on every clickable control app-wide. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+a,
+label,
+input[type="checkbox"],
+input[type="radio"],
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
