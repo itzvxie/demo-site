@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  Calculator,
   CalendarRange,
   Check,
   CheckCircle2,
@@ -12,9 +11,12 @@ import {
   Coffee,
   Download,
   FileText,
-  FolderKanban,
   Headphones,
+  History as HistoryIcon,
+  Image as ImageIcon,
   LayoutDashboard,
+  Layers,
+  Link2,
   Loader2,
   LogOut,
   Mic,
@@ -23,7 +25,6 @@ import {
   Pause,
   PenTool,
   Play,
-  Radar,
   Send,
   Settings,
   Sparkles,
@@ -33,66 +34,44 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { processStudyMaterial } from "@/lib/api";
-import { SUBJECTS, getSubject } from "@/lib/subjects";
+import { deleteHistoryEntry, fetchHistory, fetchHistoryEntry, processStudyMaterial, saveHistoryEntry } from "@/lib/api";
+import { SUBJECT_CATEGORIES, SUBJECTS, getSubject } from "@/lib/subjects";
 
 const NAV_ITEMS = [
   { id: "workspace", label: "Workspace", icon: LayoutDashboard },
-  { id: "vault", label: "Study Vault", icon: FolderKanban },
-  { id: "recorder", label: "Live Lecture Recorder", icon: Mic },
-  { id: "analytics", label: "Analytics Radar", icon: Radar },
+  { id: "history", label: "History", icon: HistoryIcon },
   { id: "settings", label: "App Settings", icon: Settings },
 ];
 
-const STUDY_MODULES = [
-  {
-    id: "solver",
-    title: "Solver Arena",
-    description:
-      "Drop math tasks or chemical equations and get instant, step-by-step solutions with clean equation blocks.",
-    icon: Calculator,
-  },
-  {
-    id: "assessment",
-    title: "Micro-Assessment Suite",
-    description:
-      "Spin up multiple-choice quizzes, True/False prompts, or Leitner-style active-recall flashcards.",
-    icon: FileText,
-  },
-  {
-    id: "exam",
-    title: "Oral & Written Mock Exam",
-    description:
-      "A real classroom simulation: countdown timer, mock questions, instant grader metrics.",
-    icon: Timer,
-  },
-  {
-    id: "podcast",
-    title: "AI Conversational Podcast",
-    description:
-      "Turn any article or upload into a two-host audio discussion, ready to listen to on the go.",
-    icon: Headphones,
-  },
-  {
-    id: "notes",
-    title: "Turbo Notes & Documents",
-    description:
-      "Splits incoming PDFs into summaries, structured tables, and a study timeline.",
-    icon: FolderKanban,
-  },
-  {
-    id: "plan",
-    title: "Study Plan Architect",
-    description:
-      "Assembles a complete milestone agenda around your specific test date.",
-    icon: CalendarRange,
-  },
+const OUTPUT_OPTIONS = [
+  { id: "notes", label: "Notes", description: "A clear, friendly summary of the material", icon: FileText },
+  { id: "flashcards", label: "Flashcards", description: "Active-recall cards to drill", icon: Layers },
+  { id: "quiz", label: "Smart Quizzes & Tests", description: "Multiple-choice practice, ready for a timed mock exam", icon: CheckCircle2 },
+  { id: "podcast", label: "Podcast", description: "A two-host audio discussion you can listen to", icon: Headphones },
+];
+
+const UPLOAD_ACTIONS = [
+  { id: "notes", title: "Upload your Notes", description: "Paste or type notes straight into the box below.", icon: PenTool },
+  { id: "file", title: "Upload PDFs, Images", description: "Drop a PDF or photo and we'll read it for you.", icon: ImageIcon },
+  { id: "youtube", title: "Paste a YouTube URL", description: "Turn any lecture or video into a full study package.", icon: Link2 },
 ];
 
 function getGreeting(hour) {
   if (hour < 12) return { text: "Good morning", emoji: "☕", Icon: Coffee };
   if (hour < 18) return { text: "Good afternoon", emoji: "☀️", Icon: Sun };
   return { text: "Good evening", emoji: "🌙", Icon: Moon };
+}
+
+function timeAgo(isoString) {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(isoString).getTime()) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(isoString).toLocaleDateString();
 }
 
 export default function DashboardWorkspace({ user, setUser, onSignOut }) {
@@ -102,10 +81,15 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
 
   const [promptText, setPromptText] = useState("");
   const [attachedFile, setAttachedFile] = useState(null);
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [youtubeInputOpen, setYoutubeInputOpen] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
   const [studyPackage, setStudyPackage] = useState(null);
+
+  const [methodPickerOpen, setMethodPickerOpen] = useState(false);
+  const [selectedOutputs, setSelectedOutputs] = useState(() => OUTPUT_OPTIONS.map((o) => o.id));
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState("summary");
@@ -131,53 +115,49 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
     setSubjectMenuOpen(false);
   }
 
-  function focusHub(seedText) {
-    if (seedText && !promptText) setPromptText(seedText);
+  function focusHub() {
     textareaRef.current?.focus();
     textareaRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
-  function handleCardClick(moduleId) {
-    if (moduleId === "exam") {
-      if (!studyPackage?.quiz?.length) {
-        setErrorMessage(
-          "Generate a study package first (ask the AI something below) so there's a quiz to sit for.",
-        );
-        focusHub();
-        return;
-      }
-      setExamOpen(true);
+  function handleUploadAction(actionId) {
+    if (actionId === "notes") {
+      focusHub();
       return;
     }
-    if (moduleId === "plan") {
-      setPlanOpen(true);
+    if (actionId === "file") {
+      fileInputRef.current?.click();
       return;
     }
-    const seeds = {
-      solver: "Solve this step-by-step: ",
-      assessment: `Create a quiz and flashcards on: `,
-      podcast: `Turn this into a two-host podcast discussion: `,
-      notes: `Summarize and structure this into notes: `,
-    };
-    focusHub(seeds[moduleId]);
+    if (actionId === "youtube") {
+      setYoutubeInputOpen(true);
+      return;
+    }
+  }
+
+  function toggleYoutubeInput() {
+    setYoutubeInputOpen((open) => {
+      if (open) setYoutubeUrl("");
+      return !open;
+    });
   }
 
   function handleFileChange(event) {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    if (file.type !== "application/pdf") {
-      setAttachedFile({ name: file.name, mimeType: file.type, base64: null, unsupported: true });
-      setErrorMessage(
-        "Only PDF uploads are processed by the AI right now. Describe images/photos in the text box instead.",
-      );
+    const isPdf = file.type === "application/pdf";
+    const isImage = file.type.startsWith("image/");
+
+    if (!isPdf && !isImage) {
+      setErrorMessage("Only PDF and image uploads are processed by the AI right now.");
       return;
     }
 
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = String(reader.result).split(",")[1];
-      setAttachedFile({ name: file.name, mimeType: file.type, base64, unsupported: false });
+      setAttachedFile({ name: file.name, mimeType: file.type, base64 });
       setErrorMessage(null);
     };
     reader.readAsDataURL(file);
@@ -214,15 +194,33 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
     setIsListening(true);
   }
 
-  async function handleAskAI() {
+  function openMethodPicker() {
     const hasText = promptText.trim().length > 0;
-    const hasDocument = attachedFile?.base64;
+    const hasDocument = Boolean(attachedFile?.base64);
+    const hasYoutube = youtubeUrl.trim().length > 0;
 
-    if (!hasText && !hasDocument) {
-      setErrorMessage("Type a question or attach a PDF before asking the AI.");
+    if (!hasText && !hasDocument && !hasYoutube) {
+      setErrorMessage("Type a question, attach a file, or paste a YouTube URL before generating.");
+      return;
+    }
+    setErrorMessage(null);
+    setMethodPickerOpen(true);
+  }
+
+  function toggleOutput(id) {
+    setSelectedOutputs((prev) => (prev.includes(id) ? prev.filter((o) => o !== id) : [...prev, id]));
+  }
+
+  async function handleGenerate() {
+    if (selectedOutputs.length === 0) {
+      setErrorMessage("Pick at least one study method to generate.");
       return;
     }
 
+    const hasDocument = Boolean(attachedFile?.base64);
+    const hasYoutube = youtubeUrl.trim().length > 0;
+
+    setMethodPickerOpen(false);
     setIsGenerating(true);
     setErrorMessage(null);
 
@@ -233,18 +231,41 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
             mimeType: attachedFile.mimeType,
             fileName: attachedFile.name,
             subject: activeSubject.label,
+            outputs: selectedOutputs,
           }
-        : { text: promptText.trim(), subject: activeSubject.label };
+        : hasYoutube
+          ? { youtubeUrl: youtubeUrl.trim(), subject: activeSubject.label, outputs: selectedOutputs }
+          : { text: promptText.trim(), subject: activeSubject.label, outputs: selectedOutputs };
 
       const result = await processStudyMaterial(payload);
       setStudyPackage(result);
-      setDrawerTab("summary");
+      setDrawerTab(result.highLevelSummary ? "summary" : selectedOutputs[0]);
       setDrawerOpen(true);
+
+      const title = promptText.trim().slice(0, 80) || attachedFile?.name || "YouTube video";
+      saveHistoryEntry({
+        subject: activeSubject.label,
+        title,
+        sourceType: result.meta?.mode || "source",
+        studyPackage: result,
+      }).catch(() => {
+        // Non-fatal: the package is already showing, just won't appear in History.
+      });
     } catch (error) {
       setErrorMessage(error.message || "Something went wrong. Please try again.");
     } finally {
       setIsGenerating(false);
     }
+  }
+
+  function openHistoryEntry(id) {
+    fetchHistoryEntry(id)
+      .then((result) => {
+        setStudyPackage(result.entry);
+        setDrawerTab(result.entry.highLevelSummary ? "summary" : "flashcards");
+        setDrawerOpen(true);
+      })
+      .catch((error) => setErrorMessage(error.message || "Couldn't open that entry."));
   }
 
   return (
@@ -261,19 +282,15 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
           onSignOut={onSignOut}
         />
 
-        <main className="relative mx-auto max-w-6xl px-6 pb-56 pt-16 sm:px-10">
-          {activeNav === "workspace" ? (
+        <main className="relative mx-auto max-w-5xl px-6 pb-56 pt-16 sm:px-10">
+          {activeNav === "workspace" && (
             <>
-              <Hero
-                greeting={greeting}
-                firstName={user.firstName}
-                onGeneratePlan={() => setPlanOpen(true)}
-              />
-              <StudyGrid onCardClick={handleCardClick} />
+              <Hero greeting={greeting} firstName={user.firstName} onGeneratePlan={() => setPlanOpen(true)} />
+              <UploadOptions onAction={handleUploadAction} />
             </>
-          ) : (
-            <ComingSoonPanel navId={activeNav} />
           )}
+          {activeNav === "history" && <HistoryPanel onOpenEntry={openHistoryEntry} />}
+          {activeNav === "settings" && <ComingSoonPanel navId={activeNav} />}
         </main>
       </div>
 
@@ -287,14 +304,34 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
           onFileChange={handleFileChange}
           fileInputRef={fileInputRef}
           textareaRef={textareaRef}
+          youtubeUrl={youtubeUrl}
+          setYoutubeUrl={setYoutubeUrl}
+          youtubeInputOpen={youtubeInputOpen}
+          onToggleYoutubeInput={toggleYoutubeInput}
+          onCloseYoutubeInput={() => {
+            setYoutubeInputOpen(false);
+            setYoutubeUrl("");
+          }}
           isListening={isListening}
           onToggleMic={toggleMic}
           onOpenSketch={() => setSketchOpen(true)}
           isGenerating={isGenerating}
-          onSubmit={handleAskAI}
+          onSubmit={openMethodPicker}
           errorMessage={errorMessage}
         />
       )}
+
+      <AnimatePresence>
+        {methodPickerOpen && (
+          <MethodPickerModal
+            selected={selectedOutputs}
+            onToggle={toggleOutput}
+            onClose={() => setMethodPickerOpen(false)}
+            onGenerate={handleGenerate}
+            isGenerating={isGenerating}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {drawerOpen && (
@@ -303,6 +340,7 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
             activeTab={drawerTab}
             setActiveTab={setDrawerTab}
             onClose={() => setDrawerOpen(false)}
+            onStartExam={() => setExamOpen(true)}
           />
         )}
       </AnimatePresence>
@@ -396,25 +434,38 @@ function TopBar({ activeSubject, subjectMenuOpen, setSubjectMenuOpen, onSelectSu
               animate={{ opacity: 1, y: 0, scale: 1 }}
               exit={{ opacity: 0, y: -8, scale: 0.97 }}
               transition={{ duration: 0.15 }}
-              className="absolute left-0 top-full z-30 mt-2 w-56 overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/95 p-1.5 shadow-2xl backdrop-blur-xl"
+              className="absolute left-0 top-full z-30 mt-2 w-64 overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/95 p-2 shadow-2xl backdrop-blur-xl"
             >
-              {SUBJECTS.map((subject) => (
-                <button
-                  key={subject.id}
-                  type="button"
-                  onClick={() => onSelectSubject(subject.id)}
-                  className={
-                    "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors " +
-                    (subject.id === activeSubject.id
-                      ? "bg-indigo-500/15 text-white"
-                      : "text-zinc-300 hover:bg-white/5")
-                  }
-                >
-                  <span className="text-base">{subject.emoji}</span>
-                  {subject.label}
-                  {subject.id === activeSubject.id && <Check className="ml-auto h-4 w-4 text-indigo-300" />}
-                </button>
-              ))}
+              <div className="max-h-96 overflow-y-auto pr-0.5">
+                {SUBJECT_CATEGORIES.map((category, catIndex) => (
+                  <div key={category.label} className={catIndex > 0 ? "mt-1 border-t border-white/5 pt-1" : ""}>
+                    <p className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                      {category.label}
+                    </p>
+                    {category.subjectIds.map((id) => {
+                      const subject = SUBJECTS.find((s) => s.id === id);
+                      if (!subject) return null;
+                      return (
+                        <button
+                          key={subject.id}
+                          type="button"
+                          onClick={() => onSelectSubject(subject.id)}
+                          className={
+                            "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors " +
+                            (subject.id === activeSubject.id
+                              ? "bg-indigo-500/15 text-white"
+                              : "text-zinc-300 hover:bg-white/5")
+                          }
+                        >
+                          <span className="text-base">{subject.emoji}</span>
+                          {subject.label}
+                          {subject.id === activeSubject.id && <Check className="ml-auto h-4 w-4 text-indigo-300" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -491,32 +542,121 @@ function Hero({ greeting, firstName, onGeneratePlan }) {
 }
 
 // ---------------------------------------------------------------------------
-// Study grid
+// Upload options - replaces the old six-card module grid with three clean
+// entry points into the same floating input hub below.
 // ---------------------------------------------------------------------------
 
-function StudyGrid({ onCardClick }) {
+function UploadOptions({ onAction }) {
   return (
-    <div className="mt-16 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-      {STUDY_MODULES.map((module, i) => {
-        const Icon = module.icon;
+    <div className="mt-14 grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {UPLOAD_ACTIONS.map((action, i) => {
+        const Icon = action.icon;
         return (
           <motion.button
-            key={module.id}
+            key={action.id}
             type="button"
-            onClick={() => onCardClick(module.id)}
+            onClick={() => onAction(action.id)}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, delay: i * 0.05 }}
-            whileHover={{ scale: 1.03 }}
+            transition={{ duration: 0.4, delay: i * 0.06 }}
+            whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
-            className="group flex flex-col items-start rounded-3xl border border-white/10 bg-white/[0.04] p-6 text-left backdrop-blur-xl transition-colors hover:border-white/20 hover:bg-white/[0.07]"
+            className="group flex flex-col items-start rounded-3xl border border-white/10 bg-white/[0.04] p-6 text-left backdrop-blur-xl transition-colors hover:border-indigo-400/30 hover:bg-white/[0.07]"
           >
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/20 to-fuchsia-500/20 text-indigo-300 transition-colors group-hover:text-indigo-200">
               <Icon className="h-5 w-5" />
             </div>
-            <h3 className="mt-4 text-base font-semibold text-zinc-100">{module.title}</h3>
-            <p className="mt-2 text-sm leading-relaxed text-zinc-500">{module.description}</p>
+            <h3 className="mt-4 text-sm font-semibold text-zinc-100">{action.title}</h3>
+            <p className="mt-1.5 text-xs leading-relaxed text-zinc-500">{action.description}</p>
           </motion.button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// History panel
+// ---------------------------------------------------------------------------
+
+function HistoryPanel({ onOpenEntry }) {
+  const [entries, setEntries] = useState(null);
+  const [error, setError] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+
+  useEffect(() => {
+    fetchHistory()
+      .then((data) => setEntries(data.entries))
+      .catch((err) => setError(err.message || "Couldn't load your history."));
+  }, []);
+
+  function handleDelete(id, event) {
+    event.stopPropagation();
+    setDeletingId(id);
+    deleteHistoryEntry(id)
+      .then(() => setEntries((prev) => prev.filter((e) => e.id !== id)))
+      .catch((err) => setError(err.message || "Couldn't delete that entry."))
+      .finally(() => setDeletingId(null));
+  }
+
+  if (error) {
+    return <p className="rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 text-sm text-rose-300">{error}</p>;
+  }
+
+  if (entries === null) {
+    return (
+      <div className="flex justify-center py-20">
+        <Loader2 className="h-6 w-6 animate-spin text-zinc-600" />
+      </div>
+    );
+  }
+
+  if (entries.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center rounded-3xl border border-dashed border-white/10 py-24 text-center text-zinc-500">
+        <HistoryIcon className="mb-4 h-8 w-8" />
+        <p className="text-sm">
+          Nothing generated yet &mdash; everything you ask the AI shows up here afterward.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <h2 className="mb-2 text-sm font-semibold text-zinc-300">Previous study sessions</h2>
+      {entries.map((entry) => {
+        const subject = getSubject(SUBJECTS.find((s) => s.label === entry.subject)?.id);
+        return (
+          <button
+            key={entry.id}
+            type="button"
+            onClick={() => onOpenEntry(entry.id)}
+            className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-left transition-colors hover:border-white/20 hover:bg-white/[0.06]"
+          >
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/5 text-base">
+              {subject.emoji}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm text-zinc-100">{entry.title}</span>
+              <span className="block text-xs text-zinc-500">
+                {entry.subject} &middot; {timeAgo(entry.created_at)}
+              </span>
+            </span>
+            <button
+              type="button"
+              title="Delete"
+              onClick={(e) => handleDelete(entry.id, e)}
+              disabled={deletingId === entry.id}
+              className="shrink-0 rounded-lg p-1.5 text-zinc-600 transition-colors hover:bg-rose-500/10 hover:text-rose-300"
+            >
+              {deletingId === entry.id ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="h-4 w-4" />
+              )}
+            </button>
+          </button>
         );
       })}
     </div>
@@ -538,6 +678,73 @@ function ComingSoonPanel({ navId }) {
 }
 
 // ---------------------------------------------------------------------------
+// Generate-method picker - choose what the AI produces before it runs
+// ---------------------------------------------------------------------------
+
+function MethodPickerModal({ selected, onToggle, onClose, onGenerate, isGenerating }) {
+  return (
+    <ModalShell onClose={onClose} title="What do you want to generate?" icon={Sparkles}>
+      <div className="flex flex-col gap-2.5">
+        {OUTPUT_OPTIONS.map((option) => {
+          const Icon = option.icon;
+          const isSelected = selected.includes(option.id);
+          return (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => onToggle(option.id)}
+              className={
+                "flex items-center gap-3 rounded-2xl border p-3.5 text-left transition-colors " +
+                (isSelected
+                  ? "border-indigo-400/50 bg-indigo-500/10"
+                  : "border-white/10 bg-white/[0.02] hover:bg-white/[0.05]")
+              }
+            >
+              <div
+                className={
+                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl " +
+                  (isSelected ? "bg-indigo-500/20 text-indigo-300" : "bg-white/5 text-zinc-400")
+                }
+              >
+                <Icon className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-zinc-100">{option.label}</p>
+                <p className="mt-0.5 text-xs text-zinc-500">{option.description}</p>
+              </div>
+              <div
+                className={
+                  "flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-colors " +
+                  (isSelected ? "border-indigo-400 bg-indigo-500 text-white" : "border-white/20")
+                }
+              >
+                {isSelected && <Check className="h-3.5 w-3.5" />}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <button
+        type="button"
+        onClick={onGenerate}
+        disabled={isGenerating}
+        className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition-all hover:shadow-indigo-500/50 disabled:cursor-wait disabled:opacity-70"
+      >
+        {isGenerating ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Generating...
+          </>
+        ) : (
+          "Generate"
+        )}
+      </button>
+    </ModalShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Floating AI input hub
 // ---------------------------------------------------------------------------
 
@@ -550,6 +757,11 @@ function FloatingInputHub({
   onFileChange,
   fileInputRef,
   textareaRef,
+  youtubeUrl,
+  setYoutubeUrl,
+  youtubeInputOpen,
+  onToggleYoutubeInput,
+  onCloseYoutubeInput,
   isListening,
   onToggleMic,
   onOpenSketch,
@@ -577,6 +789,23 @@ function FloatingInputHub({
             </div>
           )}
 
+          {youtubeInputOpen && (
+            <div className="mb-2 flex items-center gap-2 rounded-xl bg-white/5 px-3 py-1.5">
+              <Link2 className="h-3.5 w-3.5 shrink-0 text-zinc-500" />
+              <input
+                type="url"
+                autoFocus
+                value={youtubeUrl}
+                onChange={(e) => setYoutubeUrl(e.target.value)}
+                placeholder="Paste a YouTube link..."
+                className="w-full bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 outline-none"
+              />
+              <button type="button" onClick={onCloseYoutubeInput} className="ml-auto text-zinc-500 hover:text-zinc-200">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+
           <textarea
             ref={textareaRef}
             value={promptText}
@@ -597,6 +826,9 @@ function FloatingInputHub({
               />
               <HubIconButton title="Attach a file" onClick={() => fileInputRef.current?.click()}>
                 <Paperclip className="h-4 w-4" />
+              </HubIconButton>
+              <HubIconButton title="Paste a YouTube URL" onClick={onToggleYoutubeInput} active={youtubeInputOpen}>
+                <Link2 className="h-4 w-4" />
               </HubIconButton>
               <HubIconButton title="Sketch on a canvas" onClick={onOpenSketch}>
                 <PenTool className="h-4 w-4" />
@@ -647,7 +879,7 @@ function HubIconButton({ children, title, onClick, active }) {
       onClick={onClick}
       className={
         "flex h-8 w-8 items-center justify-center rounded-xl transition-colors " +
-        (active ? "bg-rose-500/20 text-rose-300" : "text-zinc-400 hover:bg-white/10 hover:text-zinc-100")
+        (active ? "bg-indigo-500/20 text-indigo-300" : "text-zinc-400 hover:bg-white/10 hover:text-zinc-100")
       }
     >
       {children}
@@ -659,19 +891,24 @@ function HubIconButton({ children, title, onClick, active }) {
 // Results drawer
 // ---------------------------------------------------------------------------
 
-const DRAWER_TABS = [
-  { id: "summary", label: "Summary" },
-  { id: "flashcards", label: "Flashcards" },
-  { id: "quiz", label: "Quiz" },
-  { id: "podcast", label: "Podcast" },
+const DRAWER_TAB_DEFS = [
+  { id: "summary", label: "Summary", field: "highLevelSummary" },
+  { id: "flashcards", label: "Flashcards", field: "flashcards" },
+  { id: "quiz", label: "Quiz", field: "quiz" },
+  { id: "podcast", label: "Podcast", field: "podcastScript" },
 ];
 
-function ResultsDrawer({ studyPackage, activeTab, setActiveTab, onClose }) {
+function ResultsDrawer({ studyPackage, activeTab, setActiveTab, onClose, onStartExam }) {
   useEffect(() => {
     return () => {
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     };
   }, []);
+
+  const availableTabs = DRAWER_TAB_DEFS.filter((tab) => {
+    const value = studyPackage?.[tab.field];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  });
 
   return (
     <motion.div
@@ -689,7 +926,7 @@ function ResultsDrawer({ studyPackage, activeTab, setActiveTab, onClose }) {
       </div>
 
       <div className="flex gap-1 border-b border-white/10 px-3 py-2">
-        {DRAWER_TABS.map((tab) => (
+        {availableTabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
@@ -711,7 +948,7 @@ function ResultsDrawer({ studyPackage, activeTab, setActiveTab, onClose }) {
           <>
             {activeTab === "summary" && <SummaryTab studyPackage={studyPackage} />}
             {activeTab === "flashcards" && <FlashcardReview flashcards={studyPackage.flashcards} />}
-            {activeTab === "quiz" && <QuizPractice quiz={studyPackage.quiz} />}
+            {activeTab === "quiz" && <QuizPractice quiz={studyPackage.quiz} onStartExam={onStartExam} />}
             {activeTab === "podcast" && <PodcastPlayer script={studyPackage.podcastScript} />}
           </>
         )}
@@ -823,7 +1060,7 @@ function FlashcardReview({ flashcards }) {
 // Quiz practice (instant feedback, untimed)
 // ---------------------------------------------------------------------------
 
-function QuizPractice({ quiz }) {
+function QuizPractice({ quiz, onStartExam }) {
   const [answers, setAnswers] = useState({});
 
   function selectAnswer(questionIndex, optionIndex) {
@@ -832,6 +1069,16 @@ function QuizPractice({ quiz }) {
 
   return (
     <div className="flex flex-col gap-5">
+      {onStartExam && (
+        <button
+          type="button"
+          onClick={onStartExam}
+          className="flex items-center justify-center gap-2 rounded-2xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2.5 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-500/20"
+        >
+          <Timer className="h-4 w-4" />
+          Start Timed Mock Exam
+        </button>
+      )}
       {quiz.map((question, qIndex) => {
         const selected = answers[qIndex];
         const hasAnswered = selected !== undefined;
