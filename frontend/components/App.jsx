@@ -222,6 +222,14 @@ function AuthScreen({ onAuthenticated }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [forgotSubmitted, setForgotSubmitted] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [isResending, setIsResending] = useState(false);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => setResendCooldown((s) => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
 
   function switchMode(nextMode) {
     setMode(nextMode);
@@ -229,6 +237,21 @@ function AuthScreen({ onAuthenticated }) {
     setConfirmPassword("");
     setError(null);
     setForgotSubmitted(false);
+    setResendCooldown(0);
+  }
+
+  async function handleResend() {
+    if (isResending || resendCooldown > 0) return;
+    setError(null);
+    setIsResending(true);
+    try {
+      await forgotPassword(email.trim());
+      setResendCooldown(30);
+    } catch (err) {
+      setError(err.message || "Couldn't resend that email. Please try again.");
+    } finally {
+      setIsResending(false);
+    }
   }
 
   async function handleSubmit(event) {
@@ -240,6 +263,7 @@ function AuthScreen({ onAuthenticated }) {
       try {
         await forgotPassword(email.trim());
         setForgotSubmitted(true);
+        setResendCooldown(30);
       } catch (err) {
         setError(err.message || "Something went wrong. Please try again.");
       } finally {
@@ -334,6 +358,19 @@ function AuthScreen({ onAuthenticated }) {
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10">
               <CheckCircle2 className="h-6 w-6 text-emerald-400" />
             </div>
+
+            <button
+              type="button"
+              onClick={handleResend}
+              disabled={isResending || resendCooldown > 0}
+              className="flex items-center justify-center gap-2 text-xs text-zinc-500 hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isResending && <Loader2 className="h-3 w-3 animate-spin" />}
+              {resendCooldown > 0
+                ? `Didn't get it? Resend in ${resendCooldown}s`
+                : "Didn't get it? Resend email"}
+            </button>
+
             <button
               type="button"
               onClick={() => switchMode("login")}
