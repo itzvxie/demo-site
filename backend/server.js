@@ -5,8 +5,10 @@ import cookieParser from "cookie-parser";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import { fetchTranscript } from "youtube-transcript";
 import { migrate } from "./db.js";
 import authRouter from "./routes/auth.js";
+import historyRouter from "./routes/history.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -59,41 +61,67 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // a system prompt instruction is obeyed.
 // ---------------------------------------------------------------------------
 
-const StudyPackageSchema = z.object({
-  highLevelSummary: z
-    .string()
-    .describe(
-      "A 3-sentence conversational breakdown simplifying the core concept like talking to a friend.",
-    ),
-  flashcards: z
-    .array(
-      z.object({
-        front: z.string().describe("Highly targeted active recall question."),
-        back: z.string().describe("Precise, punchy answer."),
-      }),
-    )
-    .min(6)
-    .max(14),
-  quiz: z
-    .array(
-      z.object({
-        question: z.string().describe("Multiple choice question phrase."),
-        options: z.array(z.string()).length(4),
-        correctAnswerIndex: z.number().int().min(0).max(3),
-      }),
-    )
-    .min(4)
-    .max(10),
-  podcastScript: z
-    .array(
-      z.object({
-        speaker: z.enum(["Host Harry (Energetic)", "Host Sarah (Analytical)"]),
-        text: z.string(),
-      }),
-    )
-    .min(6)
-    .max(20),
-});
+// Each requestable output maps to one field of the full schema. The student
+// picks which outputs they want before generating (see the frontend's
+// generate-method picker), and we only ask Claude to produce those fields -
+// cheaper, faster, and the response naturally only contains what was asked
+// for instead of always paying for all four.
+const OUTPUT_FIELD_SCHEMAS = {
+  notes: {
+    highLevelSummary: z
+      .string()
+      .describe(
+        "A 3-sentence conversational breakdown simplifying the core concept like talking to a friend.",
+      ),
+  },
+  flashcards: {
+    flashcards: z
+      .array(
+        z.object({
+          front: z.string().describe("Highly targeted active recall question."),
+          back: z.string().describe("Precise, punchy answer."),
+        }),
+      )
+      .min(6)
+      .max(14),
+  },
+  quiz: {
+    quiz: z
+      .array(
+        z.object({
+          question: z.string().describe("Multiple choice question phrase."),
+          options: z.array(z.string()).length(4),
+          correctAnswerIndex: z.number().int().min(0).max(3),
+        }),
+      )
+      .min(4)
+      .max(10),
+  },
+  podcast: {
+    podcastScript: z
+      .array(
+        z.object({
+          speaker: z.enum(["Host Harry (Energetic)", "Host Sarah (Analytical)"]),
+          text: z.string(),
+        }),
+      )
+      .min(6)
+      .max(20),
+  },
+};
+
+const ALL_OUTPUTS = Object.keys(OUTPUT_FIELD_SCHEMAS);
+
+function buildStudyPackageSchema(requestedOutputs) {
+  const validOutputs = Array.isArray(requestedOutputs)
+    ? requestedOutputs.filter((o) => OUTPUT_FIELD_SCHEMAS[o])
+    : [];
+  const outputs = validOutputs.length ? validOutputs : ALL_OUTPUTS;
+
+  const shape = {};
+  for (const output of outputs) Object.assign(shape, OUTPUT_FIELD_SCHEMAS[output]);
+  return { schema: z.object(shape), outputs };
+}
 
 // ---------------------------------------------------------------------------
 // RAG-lite pipeline: structural segmentation ("chunking")
@@ -248,50 +276,75 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/auth", authRouter);
+app.use("/api/history", historyRouter);
+
+const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 app.post("/api/process-study-material", async (req, res) => {
   try {
-    const { text, documentBase64, mimeType, fileName, subject } = req.body ?? {};
+    const { text, documentBase64, mimeType, fileName, subject, youtubeUrl, outputs } = req.body ?? {};
 
-    if (!text && !documentBase64) {
+    let effectiveText = text;
+    let sourceFileName = fileName;
+
+    if (!effectiveText && !documentBase64 && youtubeUrl) {
+      try {
+        const transcriptParts = await fetchTranscript(youtubeUrl);
+        effectiveText = transcriptParts.map((part) => part.text).join(" ").trim();
+      } catch {
+        return res.status(422).json({
+          error: "Couldn't fetch a transcript for that YouTube video - it may not have captions available. Try a different video, or paste the content as text instead.",
+        });
+      }
+      if (!effectiveText) {
+        return res.status(422).json({ error: "That video's transcript came back empty. Try a different video." });
+      }
+      sourceFileName = sourceFileName || "YouTube video";
+    }
+
+    if (!effectiveText && !documentBase64) {
       return res.status(400).json({
-        error: "Provide either `text` (raw study material) or `documentBase64` (a base64-encoded document).",
+        error: "Provide `text` (raw study material), `documentBase64` (a base64-encoded PDF or image), or `youtubeUrl`.",
       });
     }
+
+    const { schema: studyPackageSchema, outputs: resolvedOutputs } = buildStudyPackageSchema(outputs);
 
     const userContent = [];
     let segmentCount = 0;
     let mode = "document";
 
     if (documentBase64) {
-      if (mimeType !== "application/pdf") {
+      if (mimeType === "application/pdf") {
+        userContent.push({
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: documentBase64 },
+        });
+      } else if (SUPPORTED_IMAGE_TYPES.has(mimeType)) {
+        userContent.push({
+          type: "image",
+          source: { type: "base64", media_type: mimeType, data: documentBase64 },
+        });
+      } else {
         return res.status(400).json({
-          error: "documentBase64 must be a base64-encoded PDF (mimeType: 'application/pdf'). For plain text, use the `text` field instead.",
+          error: "documentBase64 must be a PDF (application/pdf) or an image (image/jpeg, image/png, image/gif, image/webp). For plain text, use the `text` field instead.",
         });
       }
       userContent.push({
-        type: "document",
-        source: {
-          type: "base64",
-          media_type: "application/pdf",
-          data: documentBase64,
-        },
-      });
-      userContent.push({
         type: "text",
-        text: `Process the attached document${fileName ? ` ("${fileName}")` : ""}${
-          subject ? ` for the subject: ${subject}.` : "."
-        } Build the full study package described in your instructions.`,
+        text: `Process the attached ${mimeType === "application/pdf" ? "document" : "image"}${
+          sourceFileName ? ` ("${sourceFileName}")` : ""
+        }${subject ? ` for the subject: ${subject}.` : "."} Build the full study package described in your instructions.`,
       });
     } else {
-      if (text.length > MAX_INPUT_CHARS) {
+      if (effectiveText.length > MAX_INPUT_CHARS) {
         return res.status(413).json({
-          error: `Study material is too large (${text.length} characters). Please split it into smaller sections (under ${MAX_INPUT_CHARS} characters each) and process them separately.`,
+          error: `Study material is too large (${effectiveText.length} characters). Please split it into smaller sections (under ${MAX_INPUT_CHARS} characters each) and process them separately.`,
         });
       }
 
-      const trimmedText = text.trim();
-      const isQuestion = trimmedText.length < QUESTION_MODE_CHAR_THRESHOLD;
+      const trimmedText = effectiveText.trim();
+      const isQuestion = !youtubeUrl && trimmedText.length < QUESTION_MODE_CHAR_THRESHOLD;
 
       if (isQuestion) {
         mode = "question";
@@ -304,8 +357,8 @@ app.post("/api/process-study-material", async (req, res) => {
           }\n\nBuild the full study package described in your instructions, directly answering the student's question.`,
         });
       } else {
-        mode = "source";
-        const chunks = chunkText(text);
+        mode = youtubeUrl ? "youtube" : "source";
+        const chunks = chunkText(trimmedText);
         if (chunks.length > MAX_CHUNKS_PER_REQUEST) {
           return res.status(413).json({
             error: `Study material segmented into ${chunks.length} chunks, which exceeds the ${MAX_CHUNKS_PER_REQUEST}-chunk limit for a single request. Please split it into smaller sections.`,
@@ -318,7 +371,7 @@ app.post("/api/process-study-material", async (req, res) => {
           type: "text",
           text: `${
             subject ? `Subject: ${subject}\n` : ""
-          }${fileName ? `Source: ${fileName}\n` : ""}Below is the study material, already segmented by the retrieval pipeline:\n\n${segmentedContext}\n\nBuild the full study package described in your instructions.`,
+          }${sourceFileName ? `Source: ${sourceFileName}\n` : ""}Below is the study material, already segmented by the retrieval pipeline:\n\n${segmentedContext}\n\nBuild the full study package described in your instructions.`,
         });
       }
     }
@@ -329,7 +382,7 @@ app.post("/api/process-study-material", async (req, res) => {
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userContent }],
       output_config: {
-        format: zodOutputFormat(StudyPackageSchema),
+        format: zodOutputFormat(studyPackageSchema),
         effort: "medium",
       },
     });
@@ -346,6 +399,7 @@ app.post("/api/process-study-material", async (req, res) => {
         model: response.model,
         mode,
         segments: segmentCount,
+        outputs: resolvedOutputs,
         inputTokens: response.usage?.input_tokens ?? null,
         outputTokens: response.usage?.output_tokens ?? null,
       },

@@ -37,6 +37,19 @@ const SCHEMA_SQL = `
   alter table users add column if not exists password_hash text;
   alter table users add column if not exists reset_token_hash text;
   alter table users add column if not exists reset_token_expires_at timestamptz;
+
+  create table if not exists study_history (
+    id uuid primary key default gen_random_uuid(),
+    user_id uuid not null references users(id) on delete cascade,
+    subject text not null,
+    title text not null,
+    source_type text not null,
+    study_package jsonb not null,
+    created_at timestamptz not null default now()
+  );
+
+  create index if not exists study_history_user_id_created_at_idx
+    on study_history (user_id, created_at desc);
 `;
 
 export async function migrate() {
@@ -103,6 +116,46 @@ export async function resetUserPassword(userId, passwordHash) {
     [userId, passwordHash],
   );
   return result.rows[0] || null;
+}
+
+/** Newest-first, capped list of a user's saved study packages (list view only - no full package payload). */
+export async function listHistoryForUser(userId, limit = 50) {
+  const result = await query(
+    `select id, subject, title, source_type, created_at
+     from study_history
+     where user_id = $1
+     order by created_at desc
+     limit $2`,
+    [userId, limit],
+  );
+  return result.rows;
+}
+
+/** Scoped to the owning user, so one account can never fetch another's entry by guessing an id. */
+export async function findHistoryEntry(id, userId) {
+  const result = await query(
+    "select * from study_history where id = $1 and user_id = $2",
+    [id, userId],
+  );
+  return result.rows[0] || null;
+}
+
+export async function createHistoryEntry({ userId, subject, title, sourceType, studyPackage }) {
+  const result = await query(
+    `insert into study_history (user_id, subject, title, source_type, study_package)
+     values ($1, $2, $3, $4, $5)
+     returning id, subject, title, source_type, created_at`,
+    [userId, subject, title, sourceType, JSON.stringify(studyPackage)],
+  );
+  return result.rows[0];
+}
+
+export async function deleteHistoryEntry(id, userId) {
+  const result = await query(
+    "delete from study_history where id = $1 and user_id = $2 returning id",
+    [id, userId],
+  );
+  return Boolean(result.rows[0]);
 }
 
 export async function upsertUser({ email, firstName, provider, providerAccountId }) {
