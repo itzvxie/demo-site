@@ -1,24 +1,21 @@
 import { Router } from "express";
+import bcrypt from "bcryptjs";
 import {
   upsertUser,
   findUserById,
+  findUserByEmail,
   updateUserFirstName,
-  findRecentLoginCode,
-  createLoginCode,
-  consumeLoginCode,
-  incrementLoginCodeAttempts,
+  createUserWithPassword,
 } from "../db.js";
 import { signSession, setSessionCookie, clearSessionCookie, readSession } from "../auth/tokens.js";
 import { verifyGoogleIdToken } from "../auth/google.js";
 import { verifyAppleIdToken, parseAppleUserField } from "../auth/apple.js";
-import { generateLoginCode, hashLoginCode, sendLoginCodeEmail } from "../auth/email.js";
 
 const router = Router();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const CODE_TTL_MS = 10 * 60 * 1000;
-const RESEND_COOLDOWN_MS = 30 * 1000;
-const MAX_CODE_ATTEMPTS = 5;
+const MIN_PASSWORD_LENGTH = 8;
+const BCRYPT_COST = 12;
 
 function issueSession(res, user) {
   const token = signSession(user);
@@ -110,65 +107,67 @@ router.post("/apple/callback", async (req, res) => {
   }
 });
 
-// -- Email code ----------------------------------------------------------
+// -- Email + password ------------------------------------------------------
 
-router.post("/email/request-code", async (req, res) => {
+router.post("/signup", async (req, res) => {
   try {
     const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+
     if (!EMAIL_RE.test(email)) {
       return res.status(400).json({ error: "Enter a valid email address." });
     }
-
-    const recent = await findRecentLoginCode(email);
-    if (recent && Date.now() - new Date(recent.created_at).getTime() < RESEND_COOLDOWN_MS) {
-      return res.status(429).json({ error: "Please wait a few seconds before requesting another code." });
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
     }
 
-    const code = generateLoginCode();
-    const codeHash = hashLoginCode(code, email);
-    await createLoginCode({ email, codeHash, expiresAt: new Date(Date.now() + CODE_TTL_MS) });
-    await sendLoginCodeEmail(email, code);
+    const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
+    const user = await createUserWithPassword({ email, passwordHash });
 
-    res.status(204).end();
-  } catch (error) {
-    console.error("[novalis-ai] Failed to send login code:", error.message);
-    res.status(500).json({ error: "Couldn't send that email right now. Please try again shortly." });
-  }
-});
-
-router.post("/email/verify-code", async (req, res) => {
-  try {
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    const code = String(req.body?.code || "").trim();
-    if (!EMAIL_RE.test(email) || !/^\d{6}$/.test(code)) {
-      return res.status(400).json({ error: "Enter the 6-digit code from your email." });
+    if (!user) {
+      return res.status(409).json({ error: "An account with this email already exists. Log in instead." });
     }
-
-    const record = await findRecentLoginCode(email);
-    if (!record || record.consumed_at || new Date(record.expires_at) < new Date()) {
-      return res.status(400).json({ error: "That code has expired. Request a new one." });
-    }
-    if (record.attempts >= MAX_CODE_ATTEMPTS) {
-      return res.status(400).json({ error: "Too many attempts. Request a new code." });
-    }
-
-    const candidateHash = hashLoginCode(code, email);
-    if (candidateHash !== record.code_hash) {
-      await incrementLoginCodeAttempts(record.id);
-      return res.status(400).json({ error: "That code doesn't match. Double-check and try again." });
-    }
-
-    await consumeLoginCode(record.id);
-    const user = await upsertUser({ email, provider: "email" });
 
     issueSession(res, user);
     res.json({
       user: { id: user.id, email: user.email, firstName: user.first_name },
-      isNewUser: user.inserted,
+      isNewUser: true,
     });
   } catch (error) {
-    console.error("[novalis-ai] Failed to verify login code:", error.message);
-    res.status(500).json({ error: "Something went wrong verifying that code. Please try again." });
+    console.error("[novalis-ai] Signup failed:", error.message);
+    res.status(500).json({ error: "Something went wrong creating your account. Please try again." });
+  }
+});
+
+router.post("/login", async (req, res) => {
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+
+    if (!EMAIL_RE.test(email) || !password) {
+      return res.status(400).json({ error: "Enter your email and password." });
+    }
+
+    const user = await findUserByEmail(email);
+    // Same generic message whether the email is unknown or the account has
+    // no password (e.g. was created some other way) - never reveal which.
+    if (!user || !user.password_hash) {
+      return res.status(401).json({ error: "Invalid email or password." });
+    }
+
+    const passwordMatches = await bcrypt.compare(password, user.password_hash);
+    if (!passwordMatches) {
+      return res.status(401).json({ error: "Invalid email or password." });
+    }
+
+    issueSession(res, user);
+    res.json({
+      user: { id: user.id, email: user.email, firstName: user.first_name },
+      isNewUser: false,
+    });
+  } catch (error) {
+    console.error("[novalis-ai] Login failed:", error.message);
+    res.status(500).json({ error: "Something went wrong signing you in. Please try again." });
   }
 });
 

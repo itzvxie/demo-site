@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
+    "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -18,7 +19,6 @@
     "jose": "^6.2.12",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.0",
-    "resend": "^6.28.1",
     "zod": "^4.6.5"
   },
   "engines": {

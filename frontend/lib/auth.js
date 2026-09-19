@@ -20,17 +20,17 @@ export function fetchSession() {
   return request("/api/auth/session");
 }
 
-export function requestEmailCode(email) {
-  return request("/api/auth/email/request-code", {
+export function signup(email, password) {
+  return request("/api/auth/signup", {
     method: "POST",
-    body: JSON.stringify({ email }),
+    body: JSON.stringify({ email, password }),
   });
 }
 
-export function verifyEmailCode(email, code) {
-  return request("/api/auth/email/verify-code", {
+export function login(email, password) {
+  return request("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, code }),
+    body: JSON.stringify({ email, password }),
   });
 }
 
