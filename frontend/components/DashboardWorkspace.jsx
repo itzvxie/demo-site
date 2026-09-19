@@ -16,6 +16,7 @@ import {
   Headphones,
   LayoutDashboard,
   Loader2,
+  LogOut,
   Mic,
   Moon,
   Paperclip,
@@ -94,7 +95,7 @@ function getGreeting(hour) {
   return { text: "Good evening", emoji: "🌙", Icon: Moon };
 }
 
-export default function DashboardWorkspace({ user, setUser }) {
+export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   const [activeNav, setActiveNav] = useState("workspace");
   const [subjectMenuOpen, setSubjectMenuOpen] = useState(false);
   const [hour, setHour] = useState(() => new Date().getHours());
@@ -257,6 +258,7 @@ export default function DashboardWorkspace({ user, setUser }) {
           setSubjectMenuOpen={setSubjectMenuOpen}
           onSelectSubject={selectSubject}
           user={user}
+          onSignOut={onSignOut}
         />
 
         <main className="relative mx-auto max-w-6xl px-6 pb-56 pt-16 sm:px-10">
@@ -370,7 +372,8 @@ function Sidebar({ activeNav, onSelect }) {
 // Top bar
 // ---------------------------------------------------------------------------
 
-function TopBar({ activeSubject, subjectMenuOpen, setSubjectMenuOpen, onSelectSubject, user }) {
+function TopBar({ activeSubject, subjectMenuOpen, setSubjectMenuOpen, onSelectSubject, user, onSignOut }) {
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/5 bg-zinc-950/70 px-6 py-4 backdrop-blur sm:px-10">
       <div className="relative">
@@ -417,10 +420,41 @@ function TopBar({ activeSubject, subjectMenuOpen, setSubjectMenuOpen, onSelectSu
         </AnimatePresence>
       </div>
 
-      <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-fuchsia-400 text-sm font-semibold text-white">
+      <div className="relative flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setAccountMenuOpen((open) => !open)}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-indigo-400 to-fuchsia-400 text-sm font-semibold text-white transition-transform hover:scale-105"
+        >
           {(user.firstName || "S").charAt(0).toUpperCase()}
-        </div>
+        </button>
+
+        <AnimatePresence>
+          {accountMenuOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -8, scale: 0.97 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -8, scale: 0.97 }}
+              transition={{ duration: 0.15 }}
+              className="absolute right-0 top-full z-30 mt-2 w-48 overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/95 p-1.5 shadow-2xl backdrop-blur-xl"
+            >
+              <div className="px-3 py-2 text-xs text-zinc-500">
+                Signed in as <span className="text-zinc-300">{user.firstName || "Scholar"}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setAccountMenuOpen(false);
+                  onSignOut?.();
+                }}
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-rose-300 transition-colors hover:bg-rose-500/10"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </header>
   );

@@ -1,9 +1,12 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import { migrate } from "./db.js";
+import authRouter from "./routes/auth.js";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -19,6 +22,17 @@ const CLAUDE_MODEL = "claude-opus-5";
 const MAX_CHUNK_CHARS = 6000;
 const MAX_INPUT_CHARS = 180000; // ~45k tokens of raw study material per request
 const MAX_CHUNKS_PER_REQUEST = 40;
+
+for (const key of ["DATABASE_URL", "SESSION_SECRET"]) {
+  if (!process.env[key]) {
+    console.warn(`[novalis-ai] ${key} is not set. Sign-in will fail until it is configured (see .env.example).`);
+  }
+}
+for (const key of ["GOOGLE_CLIENT_ID", "APPLE_SERVICES_ID", "RESEND_API_KEY"]) {
+  if (!process.env[key]) {
+    console.warn(`[novalis-ai] ${key} is not set - that sign-in method will be unavailable until it is configured.`);
+  }
+}
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.warn(
@@ -172,16 +186,28 @@ Return only the structured study package. Do not include any commentary outside 
 
 const app = express();
 
+// Cookies carry the session cross-site (frontend and backend live on
+// different domains), so CORS must echo back a specific origin - "*" is
+// rejected by browsers once `credentials: true` is set.
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",").map((o) => o.trim())
+  : null;
+
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(",") : "*",
+    origin: allowedOrigins || ((origin, callback) => callback(null, true)),
+    credentials: true,
   }),
 );
 app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true })); // Apple's Sign In callback posts form-encoded fields
+app.use(cookieParser());
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", model: CLAUDE_MODEL });
 });
+
+app.use("/api/auth", authRouter);
 
 app.post("/api/process-study-material", async (req, res) => {
   try {
@@ -293,6 +319,19 @@ app.use((_req, res) => {
   res.status(404).json({ error: "Not found." });
 });
 
-app.listen(PORT, () => {
-  console.log(`[novalis-ai] Backend listening on http://localhost:${PORT}`);
-});
+async function start() {
+  if (process.env.DATABASE_URL) {
+    try {
+      await migrate();
+      console.log("[novalis-ai] Database schema is up to date.");
+    } catch (error) {
+      console.error("[novalis-ai] Failed to run database migration:", error.message);
+    }
+  }
+
+  app.listen(PORT, () => {
+    console.log(`[novalis-ai] Backend listening on http://localhost:${PORT}`);
+  });
+}
+
+start();
