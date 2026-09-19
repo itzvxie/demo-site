@@ -195,6 +195,7 @@ router.post("/forgot-password", async (req, res) => {
 
   try {
     const user = await findUserByEmail(email);
+    console.log(`[novalis-ai] Forgot-password request: account ${user ? "found" : "NOT found"} for that email.`);
     if (user) {
       const rawToken = crypto.randomBytes(32).toString("hex");
       const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
@@ -202,7 +203,8 @@ router.post("/forgot-password", async (req, res) => {
 
       const resetUrl = `${process.env.FRONTEND_ORIGIN || ""}/reset-password?token=${rawToken}`;
       try {
-        await sendPasswordResetEmail(user.email, resetUrl);
+        const sendResult = await sendPasswordResetEmail(user.email, resetUrl);
+        console.log("[novalis-ai] Password reset email accepted by Resend:", JSON.stringify(sendResult));
       } catch (emailError) {
         console.error("[novalis-ai] Failed to send password reset email:", emailError.message);
       }

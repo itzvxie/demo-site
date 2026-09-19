@@ -15,7 +15,10 @@ function getResend() {
 export async function sendPasswordResetEmail(to, resetUrl) {
   const from = process.env.EMAIL_FROM || "Novalis AI <onboarding@resend.dev>";
 
-  await getResend().emails.send({
+  // The Resend SDK resolves with `{ data, error }` instead of throwing for
+  // API-level failures (e.g. the sandbox-mode recipient restriction), so a
+  // bare `await` here would silently swallow a failed send.
+  const { data, error } = await getResend().emails.send({
     from,
     to,
     subject: "Reset your Novalis AI password",
@@ -37,4 +40,10 @@ export async function sendPasswordResetEmail(to, resetUrl) {
       </div>
     `,
   });
+
+  if (error) {
+    throw new Error(error.message || "Resend rejected the email.");
+  }
+
+  return data;
 }
