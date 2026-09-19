@@ -1,0 +1,24 @@
+{
+  "name": "novalis-ai-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "^16.3.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "framer-motion": "^13.4.0",
+    "lucide-react": "^1.47.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

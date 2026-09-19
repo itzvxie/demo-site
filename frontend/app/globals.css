@@ -1,0 +1,37 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: var(--font-sora), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body {
+  background-color: #09090b;
+  color: #f4f4f5;
+  font-family: var(--font-body);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(161, 161, 170, 0.4) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(161, 161, 170, 0.4);
+  border-radius: 9999px;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
