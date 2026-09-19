@@ -30,20 +30,11 @@ const SCHEMA_SQL = `
     first_name text,
     provider text not null,
     provider_account_id text,
+    password_hash text,
     created_at timestamptz not null default now()
   );
 
-  create table if not exists login_codes (
-    id uuid primary key default gen_random_uuid(),
-    email text not null,
-    code_hash text not null,
-    expires_at timestamptz not null,
-    consumed_at timestamptz,
-    attempts integer not null default 0,
-    created_at timestamptz not null default now()
-  );
-
-  create index if not exists login_codes_email_idx on login_codes (email, created_at desc);
+  alter table users add column if not exists password_hash text;
 `;
 
 export async function migrate() {
@@ -68,34 +59,20 @@ export async function updateUserFirstName(id, firstName) {
   return result.rows[0] || null;
 }
 
-export async function findRecentLoginCode(email) {
+/**
+ * Creates a brand-new password account. Returns null (instead of throwing)
+ * when the email is already taken, via `on conflict do nothing` - the
+ * caller turns that into a friendly "already have an account" message.
+ */
+export async function createUserWithPassword({ email, passwordHash, firstName }) {
   const result = await query(
-    "select * from login_codes where email = $1 order by created_at desc limit 1",
-    [email],
+    `insert into users (email, first_name, provider, password_hash)
+     values ($1, $2, 'password', $3)
+     on conflict (email) do nothing
+     returning *`,
+    [email, firstName || null, passwordHash],
   );
   return result.rows[0] || null;
-}
-
-export async function createLoginCode({ email, codeHash, expiresAt }) {
-  const result = await query(
-    `insert into login_codes (email, code_hash, expires_at)
-     values ($1, $2, $3)
-     returning *`,
-    [email, codeHash, expiresAt],
-  );
-  return result.rows[0];
-}
-
-export async function consumeLoginCode(id) {
-  await query("update login_codes set consumed_at = now() where id = $1", [id]);
-}
-
-export async function incrementLoginCodeAttempts(id) {
-  const result = await query(
-    "update login_codes set attempts = attempts + 1 where id = $1 returning attempts",
-    [id],
-  );
-  return result.rows[0]?.attempts ?? 0;
 }
 
 export async function upsertUser({ email, firstName, provider, providerAccountId }) {

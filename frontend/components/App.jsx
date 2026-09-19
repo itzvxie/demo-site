@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, Loader2, Mail, Sparkles } from "lucide-react";
+import { ArrowLeft, ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, Sparkles } from "lucide-react";
 import DashboardWorkspace from "@/components/DashboardWorkspace";
 import { GOALS, SUBJECTS } from "@/lib/subjects";
-import { fetchSession, logout, requestEmailCode, updateProfile, verifyEmailCode } from "@/lib/auth";
+import { fetchSession, login, logout, signup, updateProfile } from "@/lib/auth";
 
 const ONBOARDING_STEPS = ["name", "goal", "subject"];
 
@@ -211,47 +211,44 @@ function LandingIntro({ onContinue }) {
 // Authentication view - email only, with a sign up / log in toggle
 // ---------------------------------------------------------------------------
 
+const MIN_PASSWORD_LENGTH = 8;
+
 function AuthScreen({ onAuthenticated }) {
   const [mode, setMode] = useState("signup"); // signup | login
-  const [emailStep, setEmailStep] = useState("idle"); // idle | sent
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
-  const [cooldown, setCooldown] = useState(0);
 
-  useEffect(() => {
-    if (cooldown <= 0) return undefined;
-    const timer = setTimeout(() => setCooldown((s) => s - 1), 1000);
-    return () => clearTimeout(timer);
-  }, [cooldown]);
-
-  async function handleSendCode(event) {
-    event.preventDefault();
-    if (!email.trim()) return;
-    setIsSubmitting(true);
+  function switchMode(nextMode) {
+    setMode(nextMode);
+    setPassword("");
+    setConfirmPassword("");
     setError(null);
-    try {
-      await requestEmailCode(email.trim());
-      setEmailStep("sent");
-      setCooldown(30);
-    } catch (err) {
-      setError(err.message || "Couldn't send that code. Please try again.");
-    } finally {
-      setIsSubmitting(false);
-    }
   }
 
-  async function handleVerifyCode(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
-    if (code.trim().length !== 6) return;
-    setIsSubmitting(true);
     setError(null);
+
+    if (mode === "signup" && password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return;
+    }
+    if (mode === "signup" && password !== confirmPassword) {
+      setError("Passwords don't match.");
+      return;
+    }
+
+    setIsSubmitting(true);
     try {
-      const data = await verifyEmailCode(email.trim(), code.trim());
+      const data =
+        mode === "signup" ? await signup(email.trim(), password) : await login(email.trim(), password);
       onAuthenticated(data);
     } catch (err) {
-      setError(err.message || "That code didn't work. Please try again.");
+      setError(err.message || "Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -307,103 +304,83 @@ function AuthScreen({ onAuthenticated }) {
           </motion.div>
         </AnimatePresence>
 
-        <div className="mt-8 flex w-full flex-col items-center gap-3">
-          <AnimatePresence mode="wait">
-            {emailStep === "idle" ? (
-              <motion.form
-                key="email-idle"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onSubmit={handleSendCode}
-                className="flex w-full flex-col gap-2"
+        <form onSubmit={handleSubmit} className="mt-8 flex w-full flex-col gap-2">
+          <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
+            <Mail className="h-4 w-4 shrink-0 text-zinc-500" />
+            <input
+              type="email"
+              required
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
+            />
+          </div>
+
+          <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
+            <Lock className="h-4 w-4 shrink-0 text-zinc-500" />
+            <input
+              type={showPassword ? "text" : "password"}
+              required
+              minLength={mode === "signup" ? MIN_PASSWORD_LENGTH : undefined}
+              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder={mode === "signup" ? `At least ${MIN_PASSWORD_LENGTH} characters` : "Password"}
+              className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((s) => !s)}
+              className="shrink-0 text-zinc-500 hover:text-zinc-300"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+
+          <AnimatePresence>
+            {mode === "signup" && (
+              <motion.div
+                key="confirm-password"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden"
               >
                 <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
-                  <Mail className="h-4 w-4 shrink-0 text-zinc-500" />
+                  <Lock className="h-4 w-4 shrink-0 text-zinc-500" />
                   <input
-                    type="email"
+                    type={showPassword ? "text" : "password"}
                     required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@example.com"
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Confirm password"
                     className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
                   />
                 </div>
-                <button
-                  type="submit"
-                  disabled={isSubmitting || !email.trim()}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-white/[0.06] px-5 py-3.5 text-sm font-medium text-zinc-100 backdrop-blur transition-all hover:bg-white/[0.1] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Send me a code
-                </button>
-              </motion.form>
-            ) : (
-              <motion.form
-                key="email-sent"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onSubmit={handleVerifyCode}
-                className="flex w-full flex-col gap-2"
-              >
-                <p className="text-xs text-zinc-500">
-                  We sent a 6-digit code to <span className="text-zinc-300">{email}</span>
-                </p>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoFocus
-                  maxLength={6}
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-                  placeholder="123456"
-                  className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3.5 text-center text-lg tracking-[0.5em] text-zinc-100 placeholder:text-zinc-700 outline-none focus:border-indigo-400/60"
-                />
-                <button
-                  type="submit"
-                  disabled={isSubmitting || code.length !== 6}
-                  className="flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-500 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition-all hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Verify &amp; continue
-                </button>
-                <div className="flex items-center justify-between text-xs text-zinc-500">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEmailStep("idle");
-                      setCode("");
-                      setError(null);
-                    }}
-                    className="hover:text-zinc-300"
-                  >
-                    Use a different email
-                  </button>
-                  <button
-                    type="button"
-                    disabled={cooldown > 0}
-                    onClick={handleSendCode}
-                    className="hover:text-zinc-300 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {cooldown > 0 ? `Resend in ${cooldown}s` : "Resend code"}
-                  </button>
-                </div>
-              </motion.form>
+              </motion.div>
             )}
           </AnimatePresence>
-        </div>
+
+          <button
+            type="submit"
+            disabled={isSubmitting || !email.trim() || !password}
+            className="mt-1 flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-500 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition-all hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            {mode === "signup" ? "Create account" : "Log in"}
+          </button>
+        </form>
 
         {error && <p className="mt-4 text-xs text-rose-400">{error}</p>}
 
         <button
           type="button"
-          onClick={() => {
-            setMode((m) => (m === "signup" ? "login" : "signup"));
-            setEmailStep("idle");
-            setCode("");
-            setError(null);
-          }}
+          onClick={() => switchMode(mode === "signup" ? "login" : "signup")}
           className="mt-6 text-xs text-zinc-500 hover:text-zinc-300"
         >
           {mode === "signup" ? (

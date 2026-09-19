@@ -33,7 +33,7 @@ for (const key of ["DATABASE_URL", "SESSION_SECRET"]) {
     console.warn(`[novalis-ai] ${key} is not set. Sign-in will fail until it is configured (see .env.example).`);
   }
 }
-for (const key of ["GOOGLE_CLIENT_ID", "APPLE_SERVICES_ID", "RESEND_API_KEY"]) {
+for (const key of ["GOOGLE_CLIENT_ID", "APPLE_SERVICES_ID"]) {
   if (!process.env[key]) {
     console.warn(`[novalis-ai] ${key} is not set - that sign-in method will be unavailable until it is configured.`);
   }
