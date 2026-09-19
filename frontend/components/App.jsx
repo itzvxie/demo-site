@@ -93,7 +93,7 @@ export default function App() {
       </div>
 
       <AnimatePresence>
-        {isNewUser && <OnboardingCarousel onComplete={completeOnboarding} />}
+        {isNewUser && <OnboardingCarousel onComplete={completeOnboarding} onExit={handleSignOut} />}
       </AnimatePresence>
     </div>
   );
@@ -507,7 +507,7 @@ function AuthScreen({ onAuthenticated }) {
 // Conversational onboarding carousel
 // ---------------------------------------------------------------------------
 
-function OnboardingCarousel({ onComplete }) {
+function OnboardingCarousel({ onComplete, onExit }) {
   const [stepIndex, setStepIndex] = useState(0);
   const [direction, setDirection] = useState(1);
   const [profile, setProfile] = useState({ firstName: "", goal: null, subject: null });
@@ -531,7 +531,10 @@ function OnboardingCarousel({ onComplete }) {
   }
 
   function goBack() {
-    if (stepIndex === 0) return;
+    if (stepIndex === 0) {
+      onExit?.();
+      return;
+    }
     setDirection(-1);
     setStepIndex((i) => i - 1);
   }
@@ -604,11 +607,10 @@ function OnboardingCarousel({ onComplete }) {
           <button
             type="button"
             onClick={goBack}
-            disabled={stepIndex === 0}
-            className="flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-medium text-zinc-400 transition-colors enabled:hover:bg-white/5 enabled:hover:text-zinc-200 disabled:opacity-0"
+            className="flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-medium text-zinc-400 transition-colors hover:bg-white/5 hover:text-zinc-200"
           >
             <ArrowLeft className="h-4 w-4" />
-            Back
+            {stepIndex === 0 ? "Sign out" : "Back"}
           </button>
 
           <button
