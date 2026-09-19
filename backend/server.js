@@ -38,6 +38,9 @@ for (const key of ["GOOGLE_CLIENT_ID", "APPLE_SERVICES_ID"]) {
     console.warn(`[novalis-ai] ${key} is not set - that sign-in method will be unavailable until it is configured.`);
   }
 }
+if (!process.env.RESEND_API_KEY) {
+  console.warn("[novalis-ai] RESEND_API_KEY is not set - password reset emails will not be sent until it is configured.");
+}
 
 if (!process.env.ANTHROPIC_API_KEY) {
   console.warn(

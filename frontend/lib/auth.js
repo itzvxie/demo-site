@@ -51,3 +51,17 @@ export function updateProfile(firstName) {
 export function logout() {
   return request("/api/auth/logout", { method: "POST" });
 }
+
+export function forgotPassword(email) {
+  return request("/api/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function resetPassword(token, password) {
+  return request("/api/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, password }),
+  });
+}

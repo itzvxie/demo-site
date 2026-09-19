@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, Eye, EyeOff, Loader2, Lock, Mail, Sparkles } from "lucide-react";
+import { ArrowLeft, ArrowRight, CheckCircle2, Eye, EyeOff, Loader2, Lock, Mail, Sparkles } from "lucide-react";
 import DashboardWorkspace from "@/components/DashboardWorkspace";
 import { GOALS, SUBJECTS } from "@/lib/subjects";
-import { fetchSession, login, logout, signup, updateProfile } from "@/lib/auth";
+import { fetchSession, forgotPassword, login, logout, signup, updateProfile } from "@/lib/auth";
 
 const ONBOARDING_STEPS = ["name", "goal", "subject"];
 
@@ -214,24 +214,39 @@ function LandingIntro({ onContinue }) {
 const MIN_PASSWORD_LENGTH = 8;
 
 function AuthScreen({ onAuthenticated }) {
-  const [mode, setMode] = useState("signup"); // signup | login
+  const [mode, setMode] = useState("signup"); // signup | login | forgot
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [forgotSubmitted, setForgotSubmitted] = useState(false);
 
   function switchMode(nextMode) {
     setMode(nextMode);
     setPassword("");
     setConfirmPassword("");
     setError(null);
+    setForgotSubmitted(false);
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
     setError(null);
+
+    if (mode === "forgot") {
+      setIsSubmitting(true);
+      try {
+        await forgotPassword(email.trim());
+        setForgotSubmitted(true);
+      } catch (err) {
+        setError(err.message || "Something went wrong. Please try again.");
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
 
     if (mode === "signup" && password.length < MIN_PASSWORD_LENGTH) {
       setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
@@ -287,112 +302,161 @@ function AuthScreen({ onAuthenticated }) {
 
         <AnimatePresence mode="wait">
           <motion.div
-            key={mode}
+            key={mode === "forgot" && forgotSubmitted ? "forgot-sent" : mode}
             initial={{ opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.2 }}
           >
             <h1 className="font-display text-2xl font-bold text-zinc-100">
-              {mode === "signup" ? "Create your account" : "Welcome back"}
+              {mode === "forgot"
+                ? forgotSubmitted
+                  ? "Check your email"
+                  : "Reset your password"
+                : mode === "signup"
+                  ? "Create your account"
+                  : "Welcome back"}
             </h1>
             <p className="mt-2 text-sm text-zinc-500">
-              {mode === "signup"
-                ? "Start studying smarter in under a minute."
-                : "Sign in to pick up where you left off."}
+              {mode === "forgot"
+                ? forgotSubmitted
+                  ? "If an account exists for that email, a reset link is on its way. It expires in 30 minutes."
+                  : "Enter your email and we'll send you a link to reset your password."
+                : mode === "signup"
+                  ? "Start studying smarter in under a minute."
+                  : "Sign in to pick up where you left off."}
             </p>
           </motion.div>
         </AnimatePresence>
 
-        <form onSubmit={handleSubmit} className="mt-8 flex w-full flex-col gap-2">
-          <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
-            <Mail className="h-4 w-4 shrink-0 text-zinc-500" />
-            <input
-              type="email"
-              required
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
-            />
-          </div>
-
-          <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
-            <Lock className="h-4 w-4 shrink-0 text-zinc-500" />
-            <input
-              type={showPassword ? "text" : "password"}
-              required
-              minLength={mode === "signup" ? MIN_PASSWORD_LENGTH : undefined}
-              autoComplete={mode === "signup" ? "new-password" : "current-password"}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder={mode === "signup" ? `At least ${MIN_PASSWORD_LENGTH} characters` : "Password"}
-              className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
-            />
+        {mode === "forgot" && forgotSubmitted ? (
+          <div className="mt-8 flex w-full flex-col items-center gap-4">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-500/10">
+              <CheckCircle2 className="h-6 w-6 text-emerald-400" />
+            </div>
             <button
               type="button"
-              onClick={() => setShowPassword((s) => !s)}
-              className="shrink-0 text-zinc-500 hover:text-zinc-300"
-              aria-label={showPassword ? "Hide password" : "Show password"}
+              onClick={() => switchMode("login")}
+              className="mt-1 flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-5 py-3.5 text-sm font-semibold text-zinc-100 transition-all hover:bg-white/10"
             >
-              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              Back to log in
             </button>
           </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="mt-8 flex w-full flex-col gap-2">
+            <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
+              <Mail className="h-4 w-4 shrink-0 text-zinc-500" />
+              <input
+                type="email"
+                required
+                autoComplete="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
+              />
+            </div>
 
-          <AnimatePresence>
-            {mode === "signup" && (
-              <motion.div
-                key="confirm-password"
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.2 }}
-                className="overflow-hidden"
-              >
-                <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
-                  <Lock className="h-4 w-4 shrink-0 text-zinc-500" />
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    required
-                    autoComplete="new-password"
-                    value={confirmPassword}
-                    onChange={(e) => setConfirmPassword(e.target.value)}
-                    placeholder="Confirm password"
-                    className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
-                  />
-                </div>
-              </motion.div>
+            {mode !== "forgot" && (
+              <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
+                <Lock className="h-4 w-4 shrink-0 text-zinc-500" />
+                <input
+                  type={showPassword ? "text" : "password"}
+                  required
+                  minLength={mode === "signup" ? MIN_PASSWORD_LENGTH : undefined}
+                  autoComplete={mode === "signup" ? "new-password" : "current-password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={mode === "signup" ? `At least ${MIN_PASSWORD_LENGTH} characters` : "Password"}
+                  className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((s) => !s)}
+                  className="shrink-0 text-zinc-500 hover:text-zinc-300"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
             )}
-          </AnimatePresence>
 
-          <button
-            type="submit"
-            disabled={isSubmitting || !email.trim() || !password}
-            className="mt-1 flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-500 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition-all hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
-            {mode === "signup" ? "Create account" : "Log in"}
-          </button>
-        </form>
+            {mode === "login" && (
+              <button
+                type="button"
+                onClick={() => switchMode("forgot")}
+                className="self-end text-xs text-zinc-500 hover:text-zinc-300"
+              >
+                Forgot password?
+              </button>
+            )}
+
+            <AnimatePresence>
+              {mode === "signup" && (
+                <motion.div
+                  key="confirm-password"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-transparent px-4 py-3 focus-within:border-white/20">
+                    <Lock className="h-4 w-4 shrink-0 text-zinc-500" />
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      required
+                      autoComplete="new-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm password"
+                      className="w-full bg-transparent text-sm text-zinc-100 placeholder:text-zinc-600 outline-none"
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <button
+              type="submit"
+              disabled={isSubmitting || !email.trim() || (mode !== "forgot" && !password)}
+              className="mt-1 flex w-full items-center justify-center gap-2 rounded-2xl bg-indigo-500 px-5 py-3.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/30 transition-all hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              {mode === "forgot" ? "Send reset link" : mode === "signup" ? "Create account" : "Log in"}
+            </button>
+          </form>
+        )}
 
         {error && <p className="mt-4 text-xs text-rose-400">{error}</p>}
 
-        <button
-          type="button"
-          onClick={() => switchMode(mode === "signup" ? "login" : "signup")}
-          className="mt-6 text-xs text-zinc-500 hover:text-zinc-300"
-        >
-          {mode === "signup" ? (
-            <>
-              Already have an account? <span className="font-medium text-indigo-300">Log in</span>
-            </>
-          ) : (
-            <>
-              New here? <span className="font-medium text-indigo-300">Sign up</span>
-            </>
-          )}
-        </button>
+        {mode === "forgot" ? (
+          !forgotSubmitted && (
+            <button
+              type="button"
+              onClick={() => switchMode("login")}
+              className="mt-6 text-xs text-zinc-500 hover:text-zinc-300"
+            >
+              Back to <span className="font-medium text-indigo-300">log in</span>
+            </button>
+          )
+        ) : (
+          <button
+            type="button"
+            onClick={() => switchMode(mode === "signup" ? "login" : "signup")}
+            className="mt-6 text-xs text-zinc-500 hover:text-zinc-300"
+          >
+            {mode === "signup" ? (
+              <>
+                Already have an account? <span className="font-medium text-indigo-300">Log in</span>
+              </>
+            ) : (
+              <>
+                New here? <span className="font-medium text-indigo-300">Sign up</span>
+              </>
+            )}
+          </button>
+        )}
 
         <p className="mt-6 text-xs text-zinc-600">
           By continuing you agree to Novalis AI&rsquo;s Terms &amp; Privacy Policy.
