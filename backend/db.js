@@ -150,6 +150,18 @@ export async function createHistoryEntry({ userId, subject, title, sourceType, s
   return result.rows[0];
 }
 
+/** Overwrites a saved package (e.g. after adding a missing output to a chat still in view). */
+export async function updateHistoryEntry(id, userId, studyPackage) {
+  const result = await query(
+    `update study_history
+     set study_package = $3
+     where id = $1 and user_id = $2
+     returning id, subject, title, source_type, created_at`,
+    [id, userId, JSON.stringify(studyPackage)],
+  );
+  return result.rows[0] || null;
+}
+
 export async function deleteHistoryEntry(id, userId) {
   const result = await query(
     "delete from study_history where id = $1 and user_id = $2 returning id",
