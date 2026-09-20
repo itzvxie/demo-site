@@ -236,6 +236,32 @@ Write a thorough, accurate, well-organized set of notes that fully answers it: k
 
 Write in plain prose paragraphs, not JSON, not bullet points. Be comprehensive but precise - no filler, no hedging, no meta-commentary about being an AI. These notes will be fed directly into another step that turns them into a summary, flashcards, a quiz and a podcast script, so make sure every fact a good study package would need is actually present.`;
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const MAX_OVERLOAD_RETRIES = 2;
+const OVERLOAD_RETRY_DELAY_MS = 1500;
+
+/**
+ * The free tier shares capacity across everyone using it, so a transient
+ * 503 ("model is currently experiencing high demand") is common and almost
+ * always resolves within a couple of seconds - worth a couple of quick
+ * retries before actually failing the request.
+ */
+async function generateContentWithRetry(params) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await genAI.models.generateContent(params);
+    } catch (error) {
+      const isOverloaded = error instanceof ApiError && error.status === 503;
+      if (!isOverloaded || attempt >= MAX_OVERLOAD_RETRIES) throw error;
+      console.warn(`[novalis-ai] Gemini overloaded (503), retrying (${attempt + 1}/${MAX_OVERLOAD_RETRIES})...`);
+      await sleep(OVERLOAD_RETRY_DELAY_MS * (attempt + 1));
+    }
+  }
+}
+
 /**
  * For a short question/topic (no pasted source material), research it with
  * live web search first, then feed the resulting notes into the same
@@ -251,7 +277,7 @@ Write in plain prose paragraphs, not JSON, not bullet points. Be comprehensive b
  */
 async function researchQuestion(question) {
   try {
-    const response = await genAI.models.generateContent({
+    const response = await generateContentWithRetry({
       model: GEMINI_MODEL,
       contents: question,
       config: {
@@ -390,7 +416,7 @@ app.post("/api/process-study-material", async (req, res) => {
       }
     }
 
-    const response = await genAI.models.generateContent({
+    const response = await generateContentWithRetry({
       model: GEMINI_MODEL,
       contents: [{ role: "user", parts }],
       config: {
@@ -438,6 +464,11 @@ app.post("/api/process-study-material", async (req, res) => {
       }
       if (error.status === 400) {
         return res.status(400).json({ error: "The study material could not be processed as sent. Try a shorter excerpt." });
+      }
+      if (error.status === 503) {
+        return res.status(503).json({
+          error: "The free AI model is briefly overloaded on Google's side (already retried a couple of times). Please try again in a moment.",
+        });
       }
       return res.status(502).json({ error: "The AI service returned an error. Please try again." });
     }
