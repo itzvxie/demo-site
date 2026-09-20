@@ -91,8 +91,9 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   const [methodPickerOpen, setMethodPickerOpen] = useState(false);
   const [selectedOutputs, setSelectedOutputs] = useState(() => OUTPUT_OPTIONS.map((o) => o.id));
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerTab, setDrawerTab] = useState("summary");
+  const [showChat, setShowChat] = useState(false);
+  const [chatQuestion, setChatQuestion] = useState("");
+  const [activeTab, setActiveTab] = useState("summary");
   const [sketchOpen, setSketchOpen] = useState(false);
   const [examOpen, setExamOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
@@ -237,12 +238,14 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
           ? { youtubeUrl: youtubeUrl.trim(), subject: activeSubject.label, outputs: selectedOutputs }
           : { text: promptText.trim(), subject: activeSubject.label, outputs: selectedOutputs };
 
-      const result = await processStudyMaterial(payload);
-      setStudyPackage(result);
-      setDrawerTab(result.highLevelSummary ? "summary" : selectedOutputs[0]);
-      setDrawerOpen(true);
+      const title =
+        promptText.trim().slice(0, 80) || attachedFile?.name || (hasYoutube ? "YouTube video" : "Untitled");
 
-      const title = promptText.trim().slice(0, 80) || attachedFile?.name || "YouTube video";
+      setStudyPackage(result);
+      setChatQuestion(title);
+      setActiveTab(result.highLevelSummary ? "summary" : selectedOutputs[0]);
+      setShowChat(true);
+
       saveHistoryEntry({
         subject: activeSubject.label,
         title,
@@ -258,14 +261,19 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
     }
   }
 
-  function openHistoryEntry(id) {
-    fetchHistoryEntry(id)
+  function openHistoryEntry(entry) {
+    fetchHistoryEntry(entry.id)
       .then((result) => {
         setStudyPackage(result.entry);
-        setDrawerTab(result.entry.highLevelSummary ? "summary" : "flashcards");
-        setDrawerOpen(true);
+        setChatQuestion(entry.title);
+        setActiveTab(result.entry.highLevelSummary ? "summary" : "flashcards");
+        setShowChat(true);
       })
       .catch((error) => setErrorMessage(error.message || "Couldn't open that entry."));
+  }
+
+  function closeChat() {
+    setShowChat(false);
   }
 
   return (
@@ -282,19 +290,36 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
           onSignOut={onSignOut}
         />
 
-        <main className="relative mx-auto max-w-5xl px-6 pb-56 pt-16 sm:px-10">
-          {activeNav === "workspace" && (
+        <main
+          className={
+            showChat
+              ? "relative mx-auto flex h-[calc(100vh-73px)] max-w-3xl flex-col px-6 sm:px-10"
+              : "relative mx-auto max-w-5xl px-6 pb-56 pt-16 sm:px-10"
+          }
+        >
+          {showChat ? (
+            <ChatView
+              studyPackage={studyPackage}
+              question={chatQuestion}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              onClose={closeChat}
+              onStartExam={() => setExamOpen(true)}
+            />
+          ) : activeNav === "workspace" ? (
             <>
               <Hero greeting={greeting} firstName={user.firstName} onGeneratePlan={() => setPlanOpen(true)} />
               <UploadOptions onAction={handleUploadAction} />
             </>
+          ) : activeNav === "history" ? (
+            <HistoryPanel onOpenEntry={openHistoryEntry} />
+          ) : (
+            <ComingSoonPanel navId={activeNav} />
           )}
-          {activeNav === "history" && <HistoryPanel onOpenEntry={openHistoryEntry} />}
-          {activeNav === "settings" && <ComingSoonPanel navId={activeNav} />}
         </main>
       </div>
 
-      {activeNav === "workspace" && (
+      {(activeNav === "workspace" || showChat) && (
         <FloatingInputHub
           activeSubject={activeSubject}
           promptText={promptText}
@@ -329,18 +354,6 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
             onClose={() => setMethodPickerOpen(false)}
             onGenerate={handleGenerate}
             isGenerating={isGenerating}
-          />
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {drawerOpen && (
-          <ResultsDrawer
-            studyPackage={studyPackage}
-            activeTab={drawerTab}
-            setActiveTab={setDrawerTab}
-            onClose={() => setDrawerOpen(false)}
-            onStartExam={() => setExamOpen(true)}
           />
         )}
       </AnimatePresence>
@@ -631,7 +644,7 @@ function HistoryPanel({ onOpenEntry }) {
           <button
             key={entry.id}
             type="button"
-            onClick={() => onOpenEntry(entry.id)}
+            onClick={() => onOpenEntry(entry)}
             className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-left transition-colors hover:border-white/20 hover:bg-white/[0.06]"
           >
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/5 text-base">
@@ -888,70 +901,92 @@ function HubIconButton({ children, title, onClick, active }) {
 }
 
 // ---------------------------------------------------------------------------
-// Results drawer
+// Chat view - what a generated (or reopened) study package looks like:
+// small browser-style tabs for each output up top, the question and the
+// AI's answer laid out as plain message bubbles below, no avatars.
 // ---------------------------------------------------------------------------
 
-const DRAWER_TAB_DEFS = [
-  { id: "summary", label: "Summary", field: "highLevelSummary" },
-  { id: "flashcards", label: "Flashcards", field: "flashcards" },
-  { id: "quiz", label: "Quiz", field: "quiz" },
-  { id: "podcast", label: "Podcast", field: "podcastScript" },
+const CHAT_TAB_DEFS = [
+  { id: "summary", label: "Notes", field: "highLevelSummary", icon: FileText },
+  { id: "flashcards", label: "Flashcards", field: "flashcards", icon: Layers },
+  { id: "quiz", label: "Quiz", field: "quiz", icon: CheckCircle2 },
+  { id: "podcast", label: "Podcast", field: "podcastScript", icon: Headphones },
 ];
 
-function ResultsDrawer({ studyPackage, activeTab, setActiveTab, onClose, onStartExam }) {
+function ChatView({ studyPackage, question, activeTab, setActiveTab, onClose, onStartExam }) {
   useEffect(() => {
     return () => {
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
     };
   }, []);
 
-  const availableTabs = DRAWER_TAB_DEFS.filter((tab) => {
+  const availableTabs = CHAT_TAB_DEFS.filter((tab) => {
     const value = studyPackage?.[tab.field];
     return Array.isArray(value) ? value.length > 0 : Boolean(value);
   });
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 40 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: 40 }}
-      transition={{ duration: 0.3, ease: "easeOut" }}
-      className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-white/10 bg-zinc-950/95 shadow-2xl backdrop-blur-2xl"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.25 }}
+      className="flex h-full flex-col"
     >
-      <div className="flex items-center justify-between border-b border-white/10 px-5 py-4">
-        <h2 className="text-sm font-semibold text-zinc-100">Your Study Package</h2>
-        <button type="button" aria-label="Close" onClick={onClose} className="text-zinc-500 hover:text-zinc-200">
-          <X className="h-5 w-5" />
+      <div className="flex items-center justify-between pt-4">
+        <div className="flex items-center gap-1">
+          {availableTabs.map((tab) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={
+                  "flex items-center gap-1.5 rounded-t-lg border border-b-0 px-3 py-1.5 text-xs font-medium transition-colors " +
+                  (isActive
+                    ? "border-white/10 bg-white/[0.06] text-zinc-100"
+                    : "border-transparent text-zinc-500 hover:text-zinc-300")
+                }
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          title="Back to workspace"
+          onClick={onClose}
+          className="mb-1 text-zinc-500 hover:text-zinc-200"
+        >
+          <X className="h-4 w-4" />
         </button>
       </div>
+      <div className="h-px bg-white/10" />
 
-      <div className="flex gap-1 border-b border-white/10 px-3 py-2">
-        {availableTabs.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={
-              "flex-1 rounded-xl px-3 py-2 text-xs font-medium transition-colors " +
-              (activeTab === tab.id ? "bg-white/10 text-zinc-50" : "text-zinc-500 hover:text-zinc-300")
-            }
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      <div className="flex-1 overflow-y-auto py-6 pb-36">
+        <div className="flex flex-col gap-4">
+          <div className="flex justify-end">
+            <div className="max-w-[75%] rounded-2xl rounded-br-md bg-indigo-500/15 px-4 py-2.5 text-sm text-zinc-100">
+              {question}
+            </div>
+          </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-5">
-        {!studyPackage ? (
-          <p className="text-sm text-zinc-500">Nothing generated yet.</p>
-        ) : (
-          <>
-            {activeTab === "summary" && <SummaryTab studyPackage={studyPackage} />}
-            {activeTab === "flashcards" && <FlashcardReview flashcards={studyPackage.flashcards} />}
-            {activeTab === "quiz" && <QuizPractice quiz={studyPackage.quiz} onStartExam={onStartExam} />}
-            {activeTab === "podcast" && <PodcastPlayer script={studyPackage.podcastScript} />}
-          </>
-        )}
+          {!studyPackage ? (
+            <p className="text-sm text-zinc-500">Nothing generated yet.</p>
+          ) : (
+            <div className="flex justify-start">
+              <div className="w-full max-w-[85%] rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-3.5 text-sm text-zinc-200">
+                {activeTab === "summary" && <SummaryTab studyPackage={studyPackage} />}
+                {activeTab === "flashcards" && <FlashcardReview flashcards={studyPackage.flashcards} />}
+                {activeTab === "quiz" && <QuizPractice quiz={studyPackage.quiz} onStartExam={onStartExam} />}
+                {activeTab === "podcast" && <PodcastPlayer script={studyPackage.podcastScript} />}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </motion.div>
   );
