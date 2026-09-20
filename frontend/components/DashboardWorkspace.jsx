@@ -105,7 +105,8 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   const [activeTab, setActiveTab] = useState("summary");
   const [currentHistoryId, setCurrentHistoryId] = useState(null);
   const [chatSource, setChatSource] = useState(null);
-  const [addingOutputId, setAddingOutputId] = useState(null);
+  const [pendingOutput, setPendingOutput] = useState(null); // { backendId, tabId, label, icon, percent }
+  const progressIntervalRef = useRef(null);
   const [sketchOpen, setSketchOpen] = useState(false);
   const [examOpen, setExamOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
@@ -119,6 +120,10 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   useEffect(() => {
     const interval = setInterval(() => setHour(new Date().getHours()), 60000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    return () => clearInterval(progressIntervalRef.current);
   }, []);
 
   const greeting = getGreeting(hour);
@@ -298,21 +303,41 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   }
 
   async function handleAddOutput(backendId, tabId) {
-    if (!chatSource) return;
+    if (!chatSource || pendingOutput) return;
 
-    setAddingOutputId(backendId);
+    const tabDef = CHAT_TAB_DEFS.find((t) => t.backendId === backendId);
     setErrorMessage(null);
+    setActiveTab(tabId);
+    setPendingOutput({ backendId, tabId, label: tabDef.label, icon: tabDef.icon, percent: 6 });
+
+    // There's no real progress to report from a single request/response call,
+    // so this eases toward ~92% and only jumps to 100% once the response
+    // actually lands - a genuine wait still reads as visible progress
+    // instead of an indefinite spinner.
+    clearInterval(progressIntervalRef.current);
+    progressIntervalRef.current = setInterval(() => {
+      setPendingOutput((prev) => {
+        if (!prev || prev.percent >= 92) return prev;
+        const step = Math.max(1, Math.round((92 - prev.percent) * 0.15));
+        return { ...prev, percent: Math.min(92, prev.percent + step) };
+      });
+    }, 220);
 
     try {
       const payload = { ...chatSource, subject: chatSubject?.label || activeSubject.label, outputs: [backendId] };
       const result = await processStudyMaterial(payload);
+      clearInterval(progressIntervalRef.current);
+      setPendingOutput((prev) => (prev ? { ...prev, percent: 100 } : prev));
+
       const merged = {
         ...studyPackage,
         ...result,
         meta: { ...studyPackage.meta, outputs: [...(studyPackage.meta?.outputs || []), backendId] },
       };
+
+      await new Promise((resolve) => setTimeout(resolve, 350)); // let the 100% register before swapping in real content
       setStudyPackage(merged);
-      setActiveTab(tabId);
+      setPendingOutput(null);
 
       if (currentHistoryId) {
         updateHistoryEntry(currentHistoryId, merged).catch(() => {
@@ -320,9 +345,10 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
         });
       }
     } catch (error) {
+      clearInterval(progressIntervalRef.current);
+      setPendingOutput(null);
+      setActiveTab("summary");
       setErrorMessage(error.message || "Couldn't add that. Please try again.");
-    } finally {
-      setAddingOutputId(null);
     }
   }
 
@@ -358,7 +384,7 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
               onClose={closeChat}
               onStartExam={() => setExamOpen(true)}
               canAddOutputs={Boolean(chatSource)}
-              addingOutputId={addingOutputId}
+              pendingOutput={pendingOutput}
               onAddOutput={handleAddOutput}
             />
           ) : activeNav === "workspace" ? (
@@ -974,6 +1000,38 @@ const CHAT_TAB_DEFS = [
   { id: "podcast", backendId: "podcast", label: "Podcast", field: "podcastScript", icon: Headphones },
 ];
 
+function ProgressRing({ percent, size = 14 }) {
+  const strokeWidth = size <= 16 ? 2 : 3;
+  const radius = (size - strokeWidth) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - Math.min(100, Math.max(0, percent)) / 100);
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90 shrink-0">
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity="0.2"
+        strokeWidth={strokeWidth}
+      />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={offset}
+        className="transition-[stroke-dashoffset] duration-200 ease-out"
+      />
+    </svg>
+  );
+}
+
 function ChatView({
   studyPackage,
   question,
@@ -983,7 +1041,7 @@ function ChatView({
   onClose,
   onStartExam,
   canAddOutputs,
-  addingOutputId,
+  pendingOutput,
   onAddOutput,
 }) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
@@ -998,7 +1056,9 @@ function ChatView({
     const value = studyPackage?.[tab.field];
     return Array.isArray(value) ? value.length > 0 : Boolean(value);
   });
-  const missingTabs = CHAT_TAB_DEFS.filter((tab) => !availableTabs.includes(tab));
+  const missingTabs = CHAT_TAB_DEFS.filter(
+    (tab) => !availableTabs.includes(tab) && tab.backendId !== pendingOutput?.backendId,
+  );
 
   return (
     <motion.div
@@ -1049,7 +1109,25 @@ function ChatView({
             );
           })}
 
-          {canAddOutputs && missingTabs.length > 0 && (
+          {pendingOutput && (
+            <motion.button
+              key={pendingOutput.tabId}
+              type="button"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              onClick={() => setActiveTab(pendingOutput.tabId)}
+              className={
+                "flex items-center gap-1.5 rounded-t-lg border border-b-0 px-3 py-1.5 text-xs font-medium text-indigo-300 transition-colors " +
+                (activeTab === pendingOutput.tabId ? "border-white/10 bg-white/[0.06]" : "border-transparent hover:text-indigo-200")
+              }
+            >
+              <ProgressRing percent={pendingOutput.percent} />
+              {pendingOutput.label}
+              <span className="tabular-nums text-[10px] text-indigo-300/80">{pendingOutput.percent}%</span>
+            </motion.button>
+          )}
+
+          {canAddOutputs && missingTabs.length > 0 && !pendingOutput && (
             <div className="relative">
               <button
                 type="button"
@@ -1071,19 +1149,17 @@ function ChatView({
                   >
                     {missingTabs.map((tab) => {
                       const Icon = tab.icon;
-                      const isAdding = addingOutputId === tab.backendId;
                       return (
                         <button
                           key={tab.id}
                           type="button"
-                          disabled={Boolean(addingOutputId)}
                           onClick={() => {
                             setAddMenuOpen(false);
                             onAddOutput(tab.backendId, tab.id);
                           }}
-                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-zinc-300 transition-colors hover:bg-white/5 disabled:opacity-50"
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-zinc-300 transition-colors hover:bg-white/5"
                         >
-                          {isAdding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
+                          <Icon className="h-3.5 w-3.5" />
                           Add {tab.label}
                         </button>
                       );
@@ -1106,6 +1182,30 @@ function ChatView({
 
           {!studyPackage ? (
             <p className="text-sm text-zinc-500">Nothing generated yet.</p>
+          ) : activeTab === pendingOutput?.tabId ? (
+            <div className="flex justify-start">
+              <div className="flex w-full max-w-[85%] flex-col items-center gap-3 rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-8 text-center">
+                <div className="relative flex h-14 w-14 items-center justify-center text-indigo-300">
+                  <ProgressRing percent={pendingOutput.percent} size={56} />
+                  <motion.span
+                    animate={{ opacity: [0.6, 1, 0.6] }}
+                    transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
+                    className="absolute text-xs font-semibold tabular-nums text-indigo-200"
+                  >
+                    {pendingOutput.percent}%
+                  </motion.span>
+                </div>
+                <p className="text-sm text-zinc-300">
+                  Generating your {pendingOutput.label.toLowerCase()}
+                  <motion.span
+                    animate={{ opacity: [0, 1, 0] }}
+                    transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+                  >
+                    &hellip;
+                  </motion.span>
+                </p>
+              </div>
+            </div>
           ) : (
             <div className="flex justify-start">
               <div className="w-full max-w-[85%] rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-3.5 text-sm text-zinc-200">
