@@ -123,7 +123,7 @@ export default function App() {
 const CAPABILITY_CHIPS = [
   { emoji: "🧮", label: "Solve", top: "22%", left: "10%" },
   { emoji: "🃏", label: "Flashcards", top: "28%", left: "82%" },
-  { emoji: "🎧", label: "Podcast", top: "72%", left: "13%" },
+  { emoji: "✅", label: "Quizzes", top: "72%", left: "13%" },
   { emoji: "📅", label: "Study Plan", top: "76%", left: "84%" },
 ];
 

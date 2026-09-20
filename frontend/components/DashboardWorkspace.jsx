@@ -55,7 +55,6 @@ const OUTPUT_OPTIONS = [
   { id: "notes", label: "Notes", description: "A clear, friendly summary of the material", icon: FileText },
   { id: "flashcards", label: "Flashcards", description: "Active-recall cards to drill", icon: Layers },
   { id: "quiz", label: "Smart Quizzes & Tests", description: "Multiple-choice practice, ready for a timed mock exam", icon: CheckCircle2 },
-  { id: "podcast", label: "Podcast", description: "A two-host audio discussion you can listen to", icon: Headphones },
 ];
 
 const UPLOAD_ACTIONS = [
@@ -106,6 +105,7 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   const [currentHistoryId, setCurrentHistoryId] = useState(null);
   const [chatSource, setChatSource] = useState(null);
   const [pendingOutput, setPendingOutput] = useState(null); // { backendId, tabId, label, icon, percent }
+  const [flashcardCountPrompt, setFlashcardCountPrompt] = useState(null); // { tabId } while the count picker is open
   const progressIntervalRef = useRef(null);
   const [sketchOpen, setSketchOpen] = useState(false);
   const [examOpen, setExamOpen] = useState(false);
@@ -298,11 +298,32 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
       .catch((error) => setErrorMessage(error.message || "Couldn't open that entry."));
   }
 
-  function closeChat() {
+  // Navigating away via the sidebar should always leave chat, not just
+  // change which nav item is highlighted underneath it - it looked like the
+  // sidebar didn't do anything if a chat was open, since the chat overlay
+  // kept rendering regardless of activeNav.
+  function handleSidebarSelect(id) {
+    setActiveNav(id);
     setShowChat(false);
   }
 
-  async function handleAddOutput(backendId, tabId) {
+  // Flashcards get an extra step first: ask how many before generating,
+  // since "however many the AI feels like" isn't always the right amount.
+  function requestAddOutput(backendId, tabId) {
+    if (backendId === "flashcards") {
+      setFlashcardCountPrompt({ tabId });
+      return;
+    }
+    handleAddOutput(backendId, tabId);
+  }
+
+  function handleFlashcardCountPicked(count) {
+    const tabId = flashcardCountPrompt?.tabId;
+    setFlashcardCountPrompt(null);
+    if (tabId) handleAddOutput("flashcards", tabId, count);
+  }
+
+  async function handleAddOutput(backendId, tabId, flashcardCount) {
     if (!chatSource || pendingOutput) return;
 
     const tabDef = CHAT_TAB_DEFS.find((t) => t.backendId === backendId);
@@ -324,7 +345,12 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
     }, 220);
 
     try {
-      const payload = { ...chatSource, subject: chatSubject?.label || activeSubject.label, outputs: [backendId] };
+      const payload = {
+        ...chatSource,
+        subject: chatSubject?.label || activeSubject.label,
+        outputs: [backendId],
+        ...(flashcardCount ? { flashcardCount } : {}),
+      };
       const result = await processStudyMaterial(payload);
       clearInterval(progressIntervalRef.current);
       setPendingOutput((prev) => (prev ? { ...prev, percent: 100 } : prev));
@@ -354,7 +380,7 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
 
   return (
     <div className="flex min-h-screen bg-zinc-950 text-zinc-400">
-      <Sidebar activeNav={activeNav} onSelect={setActiveNav} />
+      <Sidebar activeNav={activeNav} onSelect={handleSidebarSelect} />
 
       <div className="flex-1 pl-20 sm:pl-24">
         <TopBar
@@ -381,11 +407,10 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
               subject={chatSubject}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
-              onClose={closeChat}
               onStartExam={() => setExamOpen(true)}
               canAddOutputs={Boolean(chatSource)}
               pendingOutput={pendingOutput}
-              onAddOutput={handleAddOutput}
+              onAddOutput={requestAddOutput}
             />
           ) : activeNav === "workspace" ? (
             <>
@@ -441,6 +466,15 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
       </AnimatePresence>
 
       <AnimatePresence>{sketchOpen && <SketchModal onClose={() => setSketchOpen(false)} />}</AnimatePresence>
+
+      <AnimatePresence>
+        {flashcardCountPrompt && (
+          <FlashcardCountModal
+            onPick={handleFlashcardCountPicked}
+            onClose={() => setFlashcardCountPrompt(null)}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {examOpen && studyPackage?.quiz && (
@@ -725,11 +759,18 @@ function HistoryPanel({ onOpenEntry }) {
       {entries.map((entry) => {
         const subject = getSubject(SUBJECTS.find((s) => s.label === entry.subject)?.id);
         return (
-          <button
+          <div
             key={entry.id}
-            type="button"
+            role="button"
+            tabIndex={0}
             onClick={() => onOpenEntry(entry)}
-            className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-left transition-colors hover:border-white/20 hover:bg-white/[0.06]"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onOpenEntry(entry);
+              }
+            }}
+            className="flex cursor-pointer items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3.5 text-left transition-colors hover:border-white/20 hover:bg-white/[0.06]"
           >
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/5 text-base">
               {subject.emoji}
@@ -753,7 +794,7 @@ function HistoryPanel({ onOpenEntry }) {
                 <Trash2 className="h-4 w-4" />
               )}
             </button>
-          </button>
+          </div>
         );
       })}
     </div>
@@ -837,6 +878,37 @@ function MethodPickerModal({ selected, onToggle, onClose, onGenerate, isGenerati
           "Generate"
         )}
       </button>
+    </ModalShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Flashcard count picker - shown when adding Flashcards from the "+" menu
+// ---------------------------------------------------------------------------
+
+const FLASHCARD_COUNT_OPTIONS = [
+  { count: 10, label: "10 cards", description: "Quick review" },
+  { count: 20, label: "20 cards", description: "Solid coverage" },
+  { count: 30, label: "30 cards", description: "Deep study" },
+  { count: null, label: "I don't know", description: "Let the AI decide" },
+];
+
+function FlashcardCountModal({ onPick, onClose }) {
+  return (
+    <ModalShell onClose={onClose} title="How many flashcards?" icon={Layers}>
+      <div className="grid grid-cols-2 gap-2.5">
+        {FLASHCARD_COUNT_OPTIONS.map((option) => (
+          <button
+            key={option.label}
+            type="button"
+            onClick={() => onPick(option.count)}
+            className="flex flex-col items-start gap-0.5 rounded-2xl border border-white/10 bg-white/[0.02] p-4 text-left transition-colors hover:border-indigo-400/50 hover:bg-indigo-500/10"
+          >
+            <p className="text-sm font-semibold text-zinc-100">{option.label}</p>
+            <p className="text-xs text-zinc-500">{option.description}</p>
+          </button>
+        ))}
+      </div>
     </ModalShell>
   );
 }
@@ -997,7 +1069,6 @@ const CHAT_TAB_DEFS = [
   { id: "summary", backendId: "notes", label: "Notes", field: "highLevelSummary", icon: FileText },
   { id: "flashcards", backendId: "flashcards", label: "Flashcards", field: "flashcards", icon: Layers },
   { id: "quiz", backendId: "quiz", label: "Quiz", field: "quiz", icon: CheckCircle2 },
-  { id: "podcast", backendId: "podcast", label: "Podcast", field: "podcastScript", icon: Headphones },
 ];
 
 function ProgressRing({ percent, size = 14 }) {
@@ -1038,7 +1109,6 @@ function ChatView({
   subject,
   activeTab,
   setActiveTab,
-  onClose,
   onStartExam,
   canAddOutputs,
   pendingOutput,
@@ -1067,24 +1137,14 @@ function ChatView({
       transition={{ duration: 0.25 }}
       className="flex h-full flex-col"
     >
-      <div className="flex items-start justify-between gap-3 pt-5">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/20 to-fuchsia-500/20 text-base">
-            {subject?.emoji || "✨"}
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-zinc-100">{question}</p>
-            {subject?.label && <p className="text-xs text-zinc-500">{subject.label}</p>}
-          </div>
+      <div className="flex items-center gap-3 pt-5">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/20 to-fuchsia-500/20 text-base">
+          {subject?.emoji || "✨"}
         </div>
-        <button
-          type="button"
-          title="Back to workspace"
-          onClick={onClose}
-          className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-200"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-zinc-100">{question}</p>
+          {subject?.label && <p className="text-xs text-zinc-500">{subject.label}</p>}
+        </div>
       </div>
 
       <div className="mt-4 flex items-center gap-1">
@@ -1172,53 +1232,95 @@ function ChatView({
       </div>
       <div className="h-px bg-white/10" />
 
-      <div className="flex-1 overflow-y-auto py-6 pb-36">
-        <div className="flex flex-col gap-4">
-          <div className="flex justify-end">
-            <div className="max-w-[75%] rounded-2xl rounded-br-md bg-indigo-500/15 px-4 py-2.5 text-sm text-zinc-100">
-              {question}
-            </div>
+      {activeTab === "flashcards" || activeTab === "quiz" ? (
+        // Full-focus mode: flashcards and quizzes get the whole panel to
+        // themselves - no chat bubbles, no echoed question, just the study
+        // material, per the "nothing else" ask.
+        <div className="flex flex-1 flex-col overflow-y-auto py-6 pb-36">
+          <div className="mx-auto flex w-full max-w-xl flex-1 flex-col">
+            {!studyPackage ? (
+              <p className="text-sm text-zinc-500">Nothing generated yet.</p>
+            ) : activeTab === pendingOutput?.tabId ? (
+              <PendingFocusBlock label={pendingOutput.label} percent={pendingOutput.percent} />
+            ) : activeTab === "flashcards" ? (
+              <FlashcardReview flashcards={studyPackage.flashcards} />
+            ) : (
+              <QuizPractice quiz={studyPackage.quiz} onStartExam={onStartExam} />
+            )}
           </div>
-
-          {!studyPackage ? (
-            <p className="text-sm text-zinc-500">Nothing generated yet.</p>
-          ) : activeTab === pendingOutput?.tabId ? (
-            <div className="flex justify-start">
-              <div className="flex w-full max-w-[85%] flex-col items-center gap-3 rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-8 text-center">
-                <div className="relative flex h-14 w-14 items-center justify-center text-indigo-300">
-                  <ProgressRing percent={pendingOutput.percent} size={56} />
-                  <motion.span
-                    animate={{ opacity: [0.6, 1, 0.6] }}
-                    transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
-                    className="absolute text-xs font-semibold tabular-nums text-indigo-200"
-                  >
-                    {pendingOutput.percent}%
-                  </motion.span>
-                </div>
-                <p className="text-sm text-zinc-300">
-                  Generating your {pendingOutput.label.toLowerCase()}
-                  <motion.span
-                    animate={{ opacity: [0, 1, 0] }}
-                    transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
-                  >
-                    &hellip;
-                  </motion.span>
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex justify-start">
-              <div className="w-full max-w-[85%] rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-3.5 text-sm text-zinc-200">
-                {activeTab === "summary" && <SummaryTab studyPackage={studyPackage} />}
-                {activeTab === "flashcards" && <FlashcardReview flashcards={studyPackage.flashcards} />}
-                {activeTab === "quiz" && <QuizPractice quiz={studyPackage.quiz} onStartExam={onStartExam} />}
-                {activeTab === "podcast" && <PodcastPlayer script={studyPackage.podcastScript} />}
-              </div>
-            </div>
-          )}
         </div>
-      </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto py-6 pb-36">
+          <div className="flex flex-col gap-4">
+            <div className="flex justify-end">
+              <div className="max-w-[75%] rounded-2xl rounded-br-md bg-indigo-500/15 px-4 py-2.5 text-sm text-zinc-100">
+                {question}
+              </div>
+            </div>
+
+            {!studyPackage ? (
+              <p className="text-sm text-zinc-500">Nothing generated yet.</p>
+            ) : activeTab === pendingOutput?.tabId ? (
+              <div className="flex justify-start">
+                <div className="flex w-full max-w-[85%] flex-col items-center gap-3 rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-8 text-center">
+                  <div className="relative flex h-14 w-14 items-center justify-center text-indigo-300">
+                    <ProgressRing percent={pendingOutput.percent} size={56} />
+                    <motion.span
+                      animate={{ opacity: [0.6, 1, 0.6] }}
+                      transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
+                      className="absolute text-xs font-semibold tabular-nums text-indigo-200"
+                    >
+                      {pendingOutput.percent}%
+                    </motion.span>
+                  </div>
+                  <p className="text-sm text-zinc-300">
+                    Generating your {pendingOutput.label.toLowerCase()}
+                    <motion.span
+                      animate={{ opacity: [0, 1, 0] }}
+                      transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+                    >
+                      &hellip;
+                    </motion.span>
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-start">
+                <div className="w-full max-w-[85%] rounded-2xl rounded-bl-md bg-white/[0.04] px-4 py-3.5 text-sm text-zinc-200">
+                  {activeTab === "summary" && <SummaryTab studyPackage={studyPackage} />}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </motion.div>
+  );
+}
+
+function PendingFocusBlock({ label, percent }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+      <div className="relative flex h-16 w-16 items-center justify-center text-indigo-300">
+        <ProgressRing percent={percent} size={64} />
+        <motion.span
+          animate={{ opacity: [0.6, 1, 0.6] }}
+          transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
+          className="absolute text-xs font-semibold tabular-nums text-indigo-200"
+        >
+          {percent}%
+        </motion.span>
+      </div>
+      <p className="text-sm text-zinc-300">
+        Generating your {label.toLowerCase()}
+        <motion.span
+          animate={{ opacity: [0, 1, 0] }}
+          transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
+        >
+          &hellip;
+        </motion.span>
+      </p>
+    </div>
   );
 }
 
@@ -1235,6 +1337,7 @@ function FlashcardReview({ flashcards }) {
   const [flipped, setFlipped] = useState(false);
   const [mastered, setMastered] = useState(0);
   const [reviewedAgain, setReviewedAgain] = useState(0);
+  const total = flashcards.length;
 
   useEffect(() => {
     setQueue(flashcards.map((_, i) => i));
@@ -1245,14 +1348,18 @@ function FlashcardReview({ flashcards }) {
 
   if (queue.length === 0) {
     return (
-      <div className="flex flex-col items-center py-10 text-center">
-        <CheckCircle2 className="mb-3 h-8 w-8 text-emerald-400" />
-        <p className="text-sm text-zinc-300">All caught up! {mastered} mastered this session.</p>
+      <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
+        <CheckCircle2 className="mb-3 h-10 w-10 text-emerald-400" />
+        <p className="text-base font-medium text-zinc-100">All caught up!</p>
+        <p className="mt-1 text-sm text-zinc-500">
+          {mastered} of {total} mastered this session.
+        </p>
       </div>
     );
   }
 
   const currentCard = flashcards[queue[0]];
+  const cardNumber = total - queue.length + 1;
 
   function markKnown() {
     setMastered((m) => m + 1);
@@ -1267,36 +1374,70 @@ function FlashcardReview({ flashcards }) {
   }
 
   return (
-    <div>
+    <div className="flex flex-1 flex-col">
       <div className="mb-3 flex items-center justify-between text-xs text-zinc-500">
-        <span>{queue.length} left in this session</span>
+        <span>
+          Card {cardNumber} of {total}
+        </span>
         <span>
           {mastered} mastered · {reviewedAgain} reviewing again
         </span>
       </div>
+      <div className="mb-6 h-1 w-full overflow-hidden rounded-full bg-white/5">
+        <motion.div
+          className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-fuchsia-400"
+          animate={{ width: `${((cardNumber - 1) / total) * 100}%` }}
+          transition={{ duration: 0.3, ease: "easeOut" }}
+        />
+      </div>
 
-      <button
-        type="button"
-        onClick={() => setFlipped((f) => !f)}
-        className="flex min-h-[160px] w-full flex-col items-center justify-center rounded-2xl border border-white/10 bg-white/5 p-6 text-center transition-colors hover:bg-white/[0.07]"
-      >
-        <p className="text-xs uppercase tracking-wide text-zinc-500">{flipped ? "Answer" : "Question"}</p>
-        <p className="mt-3 text-sm text-zinc-100">{flipped ? currentCard.back : currentCard.front}</p>
-        <p className="mt-4 text-[11px] text-zinc-600">Tap to flip</p>
-      </button>
+      <div className="flex flex-1 items-center justify-center py-4 [perspective:1400px]">
+        <AnimatePresence mode="wait">
+          <motion.button
+            key={queue[0]}
+            type="button"
+            onClick={() => setFlipped((f) => !f)}
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.2 }}
+            className="relative min-h-[300px] w-full [transform-style:preserve-3d]"
+            style={{
+              transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
+              transition: "transform 0.5s cubic-bezier(0.4, 0.2, 0.2, 1)",
+            }}
+          >
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] p-8 text-center shadow-xl [backface-visibility:hidden]"
+            >
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300/80">Question</p>
+              <p className="mt-5 text-xl font-medium leading-relaxed text-zinc-100">{currentCard.front}</p>
+              <p className="mt-6 text-[11px] text-zinc-600">Tap to reveal the answer</p>
+            </div>
+            <div
+              className="absolute inset-0 flex flex-col items-center justify-center rounded-3xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/10 to-white/[0.02] p-8 text-center shadow-xl [backface-visibility:hidden]"
+              style={{ transform: "rotateY(180deg)" }}
+            >
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300/80">Answer</p>
+              <p className="mt-5 text-xl font-medium leading-relaxed text-zinc-100">{currentCard.back}</p>
+              <p className="mt-6 text-[11px] text-zinc-600">Tap to flip back</p>
+            </div>
+          </motion.button>
+        </AnimatePresence>
+      </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3">
+      <div className="mt-2 grid grid-cols-2 gap-3">
         <button
           type="button"
           onClick={markAgain}
-          className="rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-zinc-300 hover:bg-white/10"
+          className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3.5 text-sm font-medium text-zinc-300 transition-colors hover:bg-white/10"
         >
           Review again
         </button>
         <button
           type="button"
           onClick={markKnown}
-          className="rounded-xl bg-emerald-500/90 px-4 py-2.5 text-sm font-medium text-white hover:bg-emerald-500"
+          className="rounded-2xl bg-emerald-500/90 px-4 py-3.5 text-sm font-medium text-white transition-colors hover:bg-emerald-500"
         >
           I know this
         </button>
@@ -1312,22 +1453,63 @@ function FlashcardReview({ flashcards }) {
 function QuizPractice({ quiz, onStartExam }) {
   const [answers, setAnswers] = useState({});
 
+  useEffect(() => {
+    setAnswers({});
+  }, [quiz]);
+
   function selectAnswer(questionIndex, optionIndex) {
     setAnswers((prev) => ({ ...prev, [questionIndex]: optionIndex }));
   }
 
+  const answeredCount = Object.keys(answers).length;
+  const correctCount = quiz.reduce(
+    (sum, question, qIndex) => sum + (answers[qIndex] === question.correctAnswerIndex ? 1 : 0),
+    0,
+  );
+  const allAnswered = answeredCount === quiz.length;
+
   return (
-    <div className="flex flex-col gap-5">
-      {onStartExam && (
-        <button
-          type="button"
-          onClick={onStartExam}
-          className="flex items-center justify-center gap-2 rounded-2xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2.5 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-500/20"
-        >
-          <Timer className="h-4 w-4" />
-          Start Timed Mock Exam
-        </button>
-      )}
+    <div className="flex flex-1 flex-col gap-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300/80">Quiz</p>
+          <p className="mt-1 text-sm text-zinc-500">
+            {answeredCount} of {quiz.length} answered
+          </p>
+        </div>
+        {onStartExam && (
+          <button
+            type="button"
+            onClick={onStartExam}
+            className="flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-indigo-400/30 bg-indigo-500/10 px-4 py-2.5 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-500/20"
+          >
+            <Timer className="h-4 w-4" />
+            Timed Mock Exam
+          </button>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {allAnswered && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            exit={{ opacity: 0, y: -8, height: 0 }}
+            transition={{ duration: 0.25 }}
+            className="overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-indigo-500/10 to-fuchsia-500/10 px-5 py-4 text-center"
+          >
+            <p className="text-2xl font-semibold text-zinc-100">
+              {correctCount}/{quiz.length}
+            </p>
+            <p className="mt-1 text-xs text-zinc-400">
+              {correctCount === quiz.length
+                ? "Perfect score! Nice work."
+                : "correct — review the highlighted answers below"}
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {quiz.map((question, qIndex) => {
         const selected = answers[qIndex];
         const hasAnswered = selected !== undefined;
@@ -1362,83 +1544,6 @@ function QuizPractice({ quiz, onStartExam }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Podcast player - browser text-to-speech
-// ---------------------------------------------------------------------------
-
-function PodcastPlayer({ script }) {
-  const [playingIndex, setPlayingIndex] = useState(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-
-  useEffect(() => {
-    return () => {
-      if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-    };
-  }, []);
-
-  function play() {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    setIsPlaying(true);
-
-    script.forEach((line, index) => {
-      const utterance = new SpeechSynthesisUtterance(line.text);
-      const isHarry = line.speaker.includes("Harry");
-      utterance.pitch = isHarry ? 1.15 : 0.85;
-      utterance.rate = isHarry ? 1.05 : 0.95;
-      utterance.onstart = () => setPlayingIndex(index);
-      if (index === script.length - 1) {
-        utterance.onend = () => {
-          setIsPlaying(false);
-          setPlayingIndex(null);
-        };
-      }
-      window.speechSynthesis.speak(utterance);
-    });
-  }
-
-  function stop() {
-    if (typeof window !== "undefined") window.speechSynthesis?.cancel();
-    setIsPlaying(false);
-    setPlayingIndex(null);
-  }
-
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={isPlaying ? stop : play}
-        className="mb-4 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-fuchsia-500 px-4 py-2.5 text-sm font-semibold text-white"
-      >
-        {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-        {isPlaying ? "Stop" : "Play as Audio"}
-      </button>
-
-      <div className="flex flex-col gap-3">
-        {script.map((line, index) => {
-          const isHarry = line.speaker.includes("Harry");
-          return (
-            <div
-              key={index}
-              className={
-                "max-w-[90%] rounded-2xl px-4 py-2.5 text-sm transition-colors " +
-                (isHarry ? "self-start bg-indigo-500/15 text-indigo-100" : "self-end bg-fuchsia-500/15 text-fuchsia-100") +
-                (playingIndex === index ? " ring-1 ring-white/40" : "")
-              }
-              style={{ alignSelf: isHarry ? "flex-start" : "flex-end", display: "flex", flexDirection: "column" }}
-            >
-              <span className="mb-1 text-[10px] font-semibold uppercase tracking-wide opacity-70">
-                {line.speaker}
-              </span>
-              {line.text}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }

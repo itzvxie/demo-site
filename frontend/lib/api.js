@@ -20,7 +20,7 @@ async function request(path, options = {}) {
 /**
  * Sends raw study material (text, a base64 PDF/image, or a YouTube URL) to
  * the Novalis AI backend and gets back a structured study package for
- * whichever outputs were requested (notes/flashcards/quiz/podcast).
+ * whichever outputs were requested (notes/flashcards/quiz).
  */
 export async function processStudyMaterial({
   text,
@@ -30,10 +30,11 @@ export async function processStudyMaterial({
   youtubeUrl,
   subject,
   outputs,
+  flashcardCount,
 }) {
   return request("/api/process-study-material", {
     method: "POST",
-    body: JSON.stringify({ text, documentBase64, mimeType, fileName, youtubeUrl, subject, outputs }),
+    body: JSON.stringify({ text, documentBase64, mimeType, fileName, youtubeUrl, subject, outputs, flashcardCount }),
   });
 }
 

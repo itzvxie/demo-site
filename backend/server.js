@@ -106,26 +106,13 @@ const OUTPUT_FIELD_JSON_SCHEMAS = {
       },
     },
   },
-  podcast: {
-    podcastScript: {
-      type: "array",
-      minItems: 6,
-      maxItems: 20,
-      items: {
-        type: "object",
-        properties: {
-          speaker: { type: "string", enum: ["Host Harry (Energetic)", "Host Sarah (Analytical)"] },
-          text: { type: "string" },
-        },
-        required: ["speaker", "text"],
-      },
-    },
-  },
 };
 
 const ALL_OUTPUTS = Object.keys(OUTPUT_FIELD_JSON_SCHEMAS);
+const MIN_FLASHCARD_COUNT = 4;
+const MAX_FLASHCARD_COUNT = 40;
 
-function buildResponseJsonSchema(requestedOutputs) {
+function buildResponseJsonSchema(requestedOutputs, { flashcardCount } = {}) {
   const validOutputs = Array.isArray(requestedOutputs)
     ? requestedOutputs.filter((o) => OUTPUT_FIELD_JSON_SCHEMAS[o])
     : [];
@@ -133,6 +120,12 @@ function buildResponseJsonSchema(requestedOutputs) {
 
   const properties = {};
   for (const output of outputs) Object.assign(properties, OUTPUT_FIELD_JSON_SCHEMAS[output]);
+
+  if (properties.flashcards && flashcardCount) {
+    const count = Math.min(MAX_FLASHCARD_COUNT, Math.max(MIN_FLASHCARD_COUNT, Math.round(flashcardCount)));
+    properties.flashcards = { ...properties.flashcards, minItems: count, maxItems: count };
+  }
+
   return {
     schema: { type: "object", properties, required: Object.keys(properties) },
     outputs,
@@ -147,7 +140,7 @@ function buildResponseJsonSchema(requestedOutputs) {
 // segmentation of the source document instead of one raw blob. Each chunk
 // is tagged with an index so the model can reason about document structure
 // (introductions, sub-sections, conclusions) when it writes the summary,
-// flashcards, quiz and podcast script.
+// flashcards and quiz.
 // ---------------------------------------------------------------------------
 
 function splitOversizedParagraph(paragraph, maxChars) {
@@ -218,25 +211,22 @@ function buildSegmentedContext(chunks) {
 // System prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You are the study-content engine that powers Novalis AI, a premium AI study platform. You are given study material that has already been segmented into ordered chunks by a retrieval pipeline (marked [[SEGMENT n of total]]).
-
-Your job: read every segment as a single continuous document, then produce one complete study package for a student who wants to understand and pass their next assessment on this material.
+const SYSTEM_PROMPT = `You are the study-content engine that powers Novalis AI, a premium AI study platform. You are given study material that has already been segmented into ordered chunks by a retrieval pipeline (marked [[SEGMENT n of total]]) - this may be pasted text, a PDF or an image the student uploaded, or a transcript pulled from a YouTube video they linked. Read all of it closely before writing anything; a student is relying on this to actually understand and pass their next assessment, so vague or generic output that could apply to any topic is a failure.
 
 Non-negotiable rules:
-- "highLevelSummary" must read like a sharp, encouraging friend explaining the topic out loud, in exactly 3 sentences, zero jargon that isn't immediately defined.
-- "flashcards" use active-recall phrasing (a real question, never a fill-in-the-blank restatement of a sentence from the source). Each "back" is a precise, punchy answer, never more than two sentences.
+- "highLevelSummary" must read like a sharp, encouraging friend explaining the topic out loud, in exactly 3 sentences, zero jargon that isn't immediately defined. It must reflect what THIS specific material actually says, not a generic textbook gloss of the topic.
+- "flashcards" use active-recall phrasing (a real question, never a fill-in-the-blank restatement of a sentence from the source). Each "back" is a precise, punchy answer, never more than two sentences. When an exact flashcard count is requested, spread the cards across the full breadth of the material so they cover it well, rather than clustering on just the first section.
 - "quiz" options must be four plausible, mutually exclusive choices of similar length (no giveaway options like "All of the above" unless the source material itself tests that distinction). Exactly one is correct, indexed by "correctAnswerIndex" (0-based).
-- "podcastScript" alternates between "Host Harry (Energetic)", who opens with hooks, analogies and enthusiasm, and "Host Sarah (Analytical)", who grounds each point with a concrete fact or mechanism from the source material. The two hosts should sound like they are genuinely riffing off each other, not reading a script at each other.
 - Every fact in every field must be traceable to the supplied segments. Never invent facts, dates, formulas or figures that are not supported by the material. If the material is too thin for the requested count of flashcards or quiz questions, generate the smallest count that stays faithful to the source rather than padding with filler.
 - Write for the subject and level implied by the material itself; do not assume the reader already knows the terminology used in the source.
 
 Return only the structured study package. Do not include any commentary outside the schema.`;
 
-const RESEARCH_SYSTEM_PROMPT = `You are a meticulous research assistant preparing background notes for a study-content generator. A student has asked a short question or named a topic - there is no source document, so you must research it yourself.
+const RESEARCH_SYSTEM_PROMPT = `You are a meticulous research assistant preparing background notes for a study-content generator. A student has asked a short question or named a topic - there is no source document, so you must research it yourself and give them a real, substantive answer, not a hedge or a surface-level gloss.
 
 Write a thorough, accurate, well-organized set of notes that fully answers it: key facts, dates, causes, mechanisms, and consequences as relevant to the topic. Use the Google Search tool whenever you are not fully certain of a specific fact, date, figure, or anything that may have changed recently - do not guess or rely on shaky memory for specifics you can verify.
 
-Write in plain prose paragraphs, not JSON, not bullet points. Be comprehensive but precise - no filler, no hedging, no meta-commentary about being an AI. These notes will be fed directly into another step that turns them into a summary, flashcards, a quiz and a podcast script, so make sure every fact a good study package would need is actually present.`;
+Write in plain prose paragraphs, not JSON, not bullet points. Be comprehensive but precise - no filler, no hedging, no meta-commentary about being an AI. These notes will be fed directly into another step that turns them into a summary, flashcards and a quiz, so make sure every fact a good study package would need is actually present.`;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -343,7 +333,7 @@ app.post("/api/process-study-material", async (req, res) => {
   }
 
   try {
-    const { text, documentBase64, mimeType, fileName, subject, youtubeUrl, outputs } = req.body ?? {};
+    const { text, documentBase64, mimeType, fileName, subject, youtubeUrl, outputs, flashcardCount } = req.body ?? {};
 
     let effectiveText = text;
     let sourceFileName = fileName;
@@ -369,7 +359,9 @@ app.post("/api/process-study-material", async (req, res) => {
       });
     }
 
-    const { schema: responseJsonSchema, outputs: resolvedOutputs } = buildResponseJsonSchema(outputs);
+    const { schema: responseJsonSchema, outputs: resolvedOutputs } = buildResponseJsonSchema(outputs, {
+      flashcardCount,
+    });
 
     const parts = [];
     let segmentCount = 0;
