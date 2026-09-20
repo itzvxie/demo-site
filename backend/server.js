@@ -16,8 +16,13 @@ const PORT = process.env.PORT || 4000;
 // Google AI Studio's free tier - no billing required. Free-tier capacity is
 // shared and can get persistently overloaded on any single model, so we
 // fall back down this list (most to least preferred) rather than pinning
-// to just one.
-const GEMINI_MODEL_CANDIDATES = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"];
+// to just one. gemini-2.0-flash was retired by Google on 2026-06-01 (see
+// ai.google.dev/gemini-api/docs/deprecations) - falling back to it just
+// failed outright, so gemini-2.5-flash-lite takes its place: it's still a
+// current model and its free-tier daily quota is noticeably higher than
+// gemini-2.5-flash's, so it's also useful as extra headroom once the
+// heavier models run into their own daily cap, not only on overload.
+const GEMINI_MODEL_CANDIDATES = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"];
 const GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
 
 // A single chunk this size (~1,600 words) keeps each segment comfortably
@@ -256,7 +261,19 @@ async function generateContentWithRetry(paramsWithoutModel) {
         return await genAI.models.generateContent({ ...paramsWithoutModel, model });
       } catch (error) {
         lastError = error;
-        const isRetryable = error instanceof ApiError && RETRYABLE_STATUSES.has(error.status);
+        if (!(error instanceof ApiError)) throw error;
+
+        // A 429 means THIS model's free-tier daily quota is used up - each
+        // model has its own separate quota pool, so retrying the same one
+        // can't help before tomorrow's reset, but a different candidate
+        // model very likely still has room. Move on immediately instead of
+        // burning retries or failing the whole request over one model's cap.
+        if (error.status === 429) {
+          console.warn(`[novalis-ai] Gemini quota exhausted (429) on ${model}, trying the next model...`);
+          break;
+        }
+
+        const isRetryable = RETRYABLE_STATUSES.has(error.status);
         if (!isRetryable) throw error;
         if (attempt < MAX_OVERLOAD_RETRIES) {
           console.warn(`[novalis-ai] Gemini ${error.status} on ${model}, retrying (${attempt + 1}/${MAX_OVERLOAD_RETRIES})...`);
@@ -467,7 +484,7 @@ app.post("/api/process-study-material", async (req, res) => {
       }
       if (error.status === 429) {
         return res.status(429).json({
-          error: "You've hit the free daily limit for the AI. It resets after a short wait - try again in a few minutes.",
+          error: "You've hit the free daily limit on every available AI model. Free-tier quotas reset daily - please try again tomorrow, or in a little while if it was a short burst limit rather than the full daily cap.",
         });
       }
       if (error.status === 400) {
