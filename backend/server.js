@@ -415,6 +415,11 @@ app.post("/api/process-study-material", async (req, res) => {
     }
     if (error instanceof Anthropic.BadRequestError) {
       console.error("[novalis-ai] Anthropic rejected the request:", error.message);
+      if (error.message?.includes("credit balance")) {
+        return res.status(500).json({
+          error: "The AI service's account is out of credits. Add credits at console.anthropic.com under Plans & Billing, then try again.",
+        });
+      }
       return res.status(400).json({ error: "The study material could not be processed as sent. Try a shorter excerpt." });
     }
     if (error instanceof Anthropic.APIError) {
