@@ -425,7 +425,15 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
         </main>
       </div>
 
-      {(activeNav === "workspace" || showChat) && (
+      {/*
+        Flashcards/Quiz are full-focus ("nothing else on screen") - the
+        floating "Ask AI" bar was overlapping the review/answer buttons at
+        the bottom of that view, so it's hidden there and only shown for
+        the normal workspace and Notes chat-bubble views.
+      */}
+      {(showChat
+        ? activeTab !== "flashcards" && activeTab !== "quiz"
+        : activeNav === "workspace") && (
         <FloatingInputHub
           activeSubject={activeSubject}
           promptText={promptText}
@@ -1236,7 +1244,7 @@ function ChatView({
         // Full-focus mode: flashcards and quizzes get the whole panel to
         // themselves - no chat bubbles, no echoed question, just the study
         // material, per the "nothing else" ask.
-        <div className="flex flex-1 flex-col overflow-y-auto py-6 pb-36">
+        <div className="flex flex-1 flex-col overflow-y-auto py-6 pb-10">
           <div className="mx-auto flex w-full max-w-xl flex-1 flex-col">
             {!studyPackage ? (
               <p className="text-sm text-zinc-500">Nothing generated yet.</p>
