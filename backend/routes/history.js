@@ -33,7 +33,10 @@ router.get("/:id", async (req, res) => {
   try {
     const entry = await findHistoryEntry(req.params.id, claims.sub);
     if (!entry) return res.status(404).json({ error: "That study package couldn't be found." });
-    res.json({ entry: { ...entry.study_package, meta: { ...entry.study_package.meta, id: entry.id } } });
+    res.json({
+      entry: { ...entry.study_package, meta: { ...entry.study_package.meta, id: entry.id } },
+      source: entry.source || null,
+    });
   } catch (error) {
     console.error("[novalis-ai] Failed to load history entry:", error.message);
     res.status(500).json({ error: "Couldn't load that entry. Please try again." });
@@ -44,7 +47,7 @@ router.post("/", async (req, res) => {
   const claims = requireSession(req, res);
   if (!claims) return;
 
-  const { subject, title, sourceType, studyPackage } = req.body ?? {};
+  const { subject, title, sourceType, studyPackage, source } = req.body ?? {};
   if (!subject || !title || !sourceType || !studyPackage) {
     return res.status(400).json({ error: "subject, title, sourceType and studyPackage are required." });
   }
@@ -56,6 +59,7 @@ router.post("/", async (req, res) => {
       title: String(title).slice(0, 200),
       sourceType: String(sourceType).slice(0, 40),
       studyPackage,
+      source: source || null,
     });
     res.status(201).json({ entry });
   } catch (error) {

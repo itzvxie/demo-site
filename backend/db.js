@@ -50,6 +50,11 @@ const SCHEMA_SQL = `
 
   create index if not exists study_history_user_id_created_at_idx
     on study_history (user_id, created_at desc);
+
+  -- The original text/file/YouTube URl a package was generated from, so a
+  -- reopened chat can still request an output it wasn't originally given -
+  -- nullable because entries saved before this column existed have none.
+  alter table study_history add column if not exists source jsonb;
 `;
 
 export async function migrate() {
@@ -140,12 +145,12 @@ export async function findHistoryEntry(id, userId) {
   return result.rows[0] || null;
 }
 
-export async function createHistoryEntry({ userId, subject, title, sourceType, studyPackage }) {
+export async function createHistoryEntry({ userId, subject, title, sourceType, studyPackage, source }) {
   const result = await query(
-    `insert into study_history (user_id, subject, title, source_type, study_package)
-     values ($1, $2, $3, $4, $5)
+    `insert into study_history (user_id, subject, title, source_type, study_package, source)
+     values ($1, $2, $3, $4, $5, $6)
      returning id, subject, title, source_type, created_at`,
-    [userId, subject, title, sourceType, JSON.stringify(studyPackage)],
+    [userId, subject, title, sourceType, JSON.stringify(studyPackage), source ? JSON.stringify(source) : null],
   );
   return result.rows[0];
 }
