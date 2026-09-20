@@ -25,6 +25,7 @@ import {
   Pause,
   PenTool,
   Play,
+  Plus,
   Send,
   Settings,
   Sparkles,
@@ -34,7 +35,14 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { deleteHistoryEntry, fetchHistory, fetchHistoryEntry, processStudyMaterial, saveHistoryEntry } from "@/lib/api";
+import {
+  deleteHistoryEntry,
+  fetchHistory,
+  fetchHistoryEntry,
+  processStudyMaterial,
+  saveHistoryEntry,
+  updateHistoryEntry,
+} from "@/lib/api";
 import { SUBJECT_CATEGORIES, SUBJECTS, getSubject } from "@/lib/subjects";
 
 const NAV_ITEMS = [
@@ -94,6 +102,9 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   const [showChat, setShowChat] = useState(false);
   const [chatQuestion, setChatQuestion] = useState("");
   const [activeTab, setActiveTab] = useState("summary");
+  const [currentHistoryId, setCurrentHistoryId] = useState(null);
+  const [chatSourceAvailable, setChatSourceAvailable] = useState(false);
+  const [addingOutputId, setAddingOutputId] = useState(null);
   const [sketchOpen, setSketchOpen] = useState(false);
   const [examOpen, setExamOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
@@ -238,12 +249,15 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
           ? { youtubeUrl: youtubeUrl.trim(), subject: activeSubject.label, outputs: selectedOutputs }
           : { text: promptText.trim(), subject: activeSubject.label, outputs: selectedOutputs };
 
+      const result = await processStudyMaterial(payload);
       const title =
         promptText.trim().slice(0, 80) || attachedFile?.name || (hasYoutube ? "YouTube video" : "Untitled");
 
       setStudyPackage(result);
       setChatQuestion(title);
       setActiveTab(result.highLevelSummary ? "summary" : selectedOutputs[0]);
+      setChatSourceAvailable(true);
+      setCurrentHistoryId(null);
       setShowChat(true);
 
       saveHistoryEntry({
@@ -251,9 +265,12 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
         title,
         sourceType: result.meta?.mode || "source",
         studyPackage: result,
-      }).catch(() => {
-        // Non-fatal: the package is already showing, just won't appear in History.
-      });
+      })
+        .then((res) => setCurrentHistoryId(res.entry.id))
+        .catch(() => {
+          // Non-fatal: the package is already showing, just won't appear in History
+          // (and "add more outputs" below won't be able to persist the addition).
+        });
     } catch (error) {
       setErrorMessage(error.message || "Something went wrong. Please try again.");
     } finally {
@@ -267,6 +284,10 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
         setStudyPackage(result.entry);
         setChatQuestion(entry.title);
         setActiveTab(result.entry.highLevelSummary ? "summary" : "flashcards");
+        // The original source material isn't saved, only the generated package,
+        // so there's nothing to regenerate from - "add more outputs" stays hidden.
+        setChatSourceAvailable(false);
+        setCurrentHistoryId(entry.id);
         setShowChat(true);
       })
       .catch((error) => setErrorMessage(error.message || "Couldn't open that entry."));
@@ -274,6 +295,47 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
 
   function closeChat() {
     setShowChat(false);
+  }
+
+  async function handleAddOutput(backendId, tabId) {
+    const hasDocument = Boolean(attachedFile?.base64);
+    const hasYoutube = youtubeUrl.trim().length > 0;
+
+    setAddingOutputId(backendId);
+    setErrorMessage(null);
+
+    try {
+      const payload = hasDocument
+        ? {
+            documentBase64: attachedFile.base64,
+            mimeType: attachedFile.mimeType,
+            fileName: attachedFile.name,
+            subject: activeSubject.label,
+            outputs: [backendId],
+          }
+        : hasYoutube
+          ? { youtubeUrl: youtubeUrl.trim(), subject: activeSubject.label, outputs: [backendId] }
+          : { text: promptText.trim(), subject: activeSubject.label, outputs: [backendId] };
+
+      const result = await processStudyMaterial(payload);
+      const merged = {
+        ...studyPackage,
+        ...result,
+        meta: { ...studyPackage.meta, outputs: [...(studyPackage.meta?.outputs || []), backendId] },
+      };
+      setStudyPackage(merged);
+      setActiveTab(tabId);
+
+      if (currentHistoryId) {
+        updateHistoryEntry(currentHistoryId, merged).catch(() => {
+          // Non-fatal: the live view already has it, History just won't reflect it yet.
+        });
+      }
+    } catch (error) {
+      setErrorMessage(error.message || "Couldn't add that. Please try again.");
+    } finally {
+      setAddingOutputId(null);
+    }
   }
 
   return (
@@ -288,6 +350,7 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
           onSelectSubject={selectSubject}
           user={user}
           onSignOut={onSignOut}
+          hideSubject={showChat}
         />
 
         <main
@@ -305,6 +368,9 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
               setActiveTab={setActiveTab}
               onClose={closeChat}
               onStartExam={() => setExamOpen(true)}
+              canAddOutputs={chatSourceAvailable}
+              addingOutputId={addingOutputId}
+              onAddOutput={handleAddOutput}
             />
           ) : activeNav === "workspace" ? (
             <>
@@ -343,6 +409,7 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
           isGenerating={isGenerating}
           onSubmit={openMethodPicker}
           errorMessage={errorMessage}
+          hideSubjectTag={showChat}
         />
       )}
 
@@ -423,68 +490,70 @@ function Sidebar({ activeNav, onSelect }) {
 // Top bar
 // ---------------------------------------------------------------------------
 
-function TopBar({ activeSubject, subjectMenuOpen, setSubjectMenuOpen, onSelectSubject, user, onSignOut }) {
+function TopBar({ activeSubject, subjectMenuOpen, setSubjectMenuOpen, onSelectSubject, user, onSignOut, hideSubject }) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-white/5 bg-zinc-950/70 px-6 py-4 backdrop-blur sm:px-10">
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => setSubjectMenuOpen((open) => !open)}
-          className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/10"
-        >
-          <span className="text-base">{activeSubject.emoji}</span>
-          {activeSubject.label}
-          <ChevronDown
-            className={"h-4 w-4 text-zinc-500 transition-transform " + (subjectMenuOpen ? "rotate-180" : "")}
-          />
-        </button>
+      {!hideSubject && (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setSubjectMenuOpen((open) => !open)}
+            className="flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/10"
+          >
+            <span className="text-base">{activeSubject.emoji}</span>
+            {activeSubject.label}
+            <ChevronDown
+              className={"h-4 w-4 text-zinc-500 transition-transform " + (subjectMenuOpen ? "rotate-180" : "")}
+            />
+          </button>
 
-        <AnimatePresence>
-          {subjectMenuOpen && (
-            <motion.div
-              initial={{ opacity: 0, y: -8, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -8, scale: 0.97 }}
-              transition={{ duration: 0.15 }}
-              className="absolute left-0 top-full z-30 mt-2 w-64 overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/95 p-2 shadow-2xl backdrop-blur-xl"
-            >
-              <div className="max-h-96 overflow-y-auto pr-0.5">
-                {SUBJECT_CATEGORIES.map((category, catIndex) => (
-                  <div key={category.label} className={catIndex > 0 ? "mt-1 border-t border-white/5 pt-1" : ""}>
-                    <p className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
-                      {category.label}
-                    </p>
-                    {category.subjectIds.map((id) => {
-                      const subject = SUBJECTS.find((s) => s.id === id);
-                      if (!subject) return null;
-                      return (
-                        <button
-                          key={subject.id}
-                          type="button"
-                          onClick={() => onSelectSubject(subject.id)}
-                          className={
-                            "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors " +
-                            (subject.id === activeSubject.id
-                              ? "bg-indigo-500/15 text-white"
-                              : "text-zinc-300 hover:bg-white/5")
-                          }
-                        >
-                          <span className="text-base">{subject.emoji}</span>
-                          {subject.label}
-                          {subject.id === activeSubject.id && <Check className="ml-auto h-4 w-4 text-indigo-300" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+          <AnimatePresence>
+            {subjectMenuOpen && (
+              <motion.div
+                initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                transition={{ duration: 0.15 }}
+                className="absolute left-0 top-full z-30 mt-2 w-64 overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/95 p-2 shadow-2xl backdrop-blur-xl"
+              >
+                <div className="max-h-96 overflow-y-auto pr-0.5">
+                  {SUBJECT_CATEGORIES.map((category, catIndex) => (
+                    <div key={category.label} className={catIndex > 0 ? "mt-1 border-t border-white/5 pt-1" : ""}>
+                      <p className="px-2.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">
+                        {category.label}
+                      </p>
+                      {category.subjectIds.map((id) => {
+                        const subject = SUBJECTS.find((s) => s.id === id);
+                        if (!subject) return null;
+                        return (
+                          <button
+                            key={subject.id}
+                            type="button"
+                            onClick={() => onSelectSubject(subject.id)}
+                            className={
+                              "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-colors " +
+                              (subject.id === activeSubject.id
+                                ? "bg-indigo-500/15 text-white"
+                                : "text-zinc-300 hover:bg-white/5")
+                            }
+                          >
+                            <span className="text-base">{subject.emoji}</span>
+                            {subject.label}
+                            {subject.id === activeSubject.id && <Check className="ml-auto h-4 w-4 text-indigo-300" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      )}
 
-      <div className="relative flex items-center gap-3">
+      <div className="relative ml-auto flex items-center gap-3">
         <button
           type="button"
           onClick={() => setAccountMenuOpen((open) => !open)}
@@ -781,15 +850,18 @@ function FloatingInputHub({
   isGenerating,
   onSubmit,
   errorMessage,
+  hideSubjectTag,
 }) {
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
       <div className="pointer-events-auto w-full max-w-2xl">
-        <div className="flex justify-center">
-          <span className="mb-[-1px] rounded-t-xl border border-b-0 border-white/10 bg-zinc-900 px-3 py-1 text-xs font-medium text-zinc-400">
-            {activeSubject.emoji} {activeSubject.label}
-          </span>
-        </div>
+        {!hideSubjectTag && (
+          <div className="flex justify-center">
+            <span className="mb-[-1px] rounded-t-xl border border-b-0 border-white/10 bg-zinc-900 px-3 py-1 text-xs font-medium text-zinc-400">
+              {activeSubject.emoji} {activeSubject.label}
+            </span>
+          </div>
+        )}
 
         <div className="rounded-3xl border border-white/10 bg-zinc-900/90 p-3 shadow-2xl backdrop-blur-2xl">
           {attachedFile && (
@@ -907,13 +979,25 @@ function HubIconButton({ children, title, onClick, active }) {
 // ---------------------------------------------------------------------------
 
 const CHAT_TAB_DEFS = [
-  { id: "summary", label: "Notes", field: "highLevelSummary", icon: FileText },
-  { id: "flashcards", label: "Flashcards", field: "flashcards", icon: Layers },
-  { id: "quiz", label: "Quiz", field: "quiz", icon: CheckCircle2 },
-  { id: "podcast", label: "Podcast", field: "podcastScript", icon: Headphones },
+  { id: "summary", backendId: "notes", label: "Notes", field: "highLevelSummary", icon: FileText },
+  { id: "flashcards", backendId: "flashcards", label: "Flashcards", field: "flashcards", icon: Layers },
+  { id: "quiz", backendId: "quiz", label: "Quiz", field: "quiz", icon: CheckCircle2 },
+  { id: "podcast", backendId: "podcast", label: "Podcast", field: "podcastScript", icon: Headphones },
 ];
 
-function ChatView({ studyPackage, question, activeTab, setActiveTab, onClose, onStartExam }) {
+function ChatView({
+  studyPackage,
+  question,
+  activeTab,
+  setActiveTab,
+  onClose,
+  onStartExam,
+  canAddOutputs,
+  addingOutputId,
+  onAddOutput,
+}) {
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+
   useEffect(() => {
     return () => {
       if (typeof window !== "undefined") window.speechSynthesis?.cancel();
@@ -924,6 +1008,7 @@ function ChatView({ studyPackage, question, activeTab, setActiveTab, onClose, on
     const value = studyPackage?.[tab.field];
     return Array.isArray(value) ? value.length > 0 : Boolean(value);
   });
+  const missingTabs = CHAT_TAB_DEFS.filter((tab) => !availableTabs.includes(tab));
 
   return (
     <motion.div
@@ -954,6 +1039,51 @@ function ChatView({ studyPackage, question, activeTab, setActiveTab, onClose, on
               </button>
             );
           })}
+
+          {canAddOutputs && missingTabs.length > 0 && (
+            <div className="relative">
+              <button
+                type="button"
+                title="Add more"
+                onClick={() => setAddMenuOpen((open) => !open)}
+                className="flex items-center rounded-t-lg border border-b-0 border-transparent px-2 py-1.5 text-zinc-500 transition-colors hover:text-zinc-300"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+
+              <AnimatePresence>
+                {addMenuOpen && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute left-0 top-full z-20 mt-1 w-44 overflow-hidden rounded-xl border border-white/10 bg-zinc-900/95 p-1 shadow-2xl backdrop-blur-xl"
+                  >
+                    {missingTabs.map((tab) => {
+                      const Icon = tab.icon;
+                      const isAdding = addingOutputId === tab.backendId;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          disabled={Boolean(addingOutputId)}
+                          onClick={() => {
+                            setAddMenuOpen(false);
+                            onAddOutput(tab.backendId, tab.id);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-zinc-300 transition-colors hover:bg-white/5 disabled:opacity-50"
+                        >
+                          {isAdding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
+                          Add {tab.label}
+                        </button>
+                      );
+                    })}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -993,23 +1123,7 @@ function ChatView({ studyPackage, question, activeTab, setActiveTab, onClose, on
 }
 
 function SummaryTab({ studyPackage }) {
-  return (
-    <div>
-      <p className="text-sm leading-relaxed text-zinc-300">{studyPackage.highLevelSummary}</p>
-      {studyPackage.meta && (
-        <div className="mt-6 grid grid-cols-2 gap-3 text-xs text-zinc-500">
-          <div className="rounded-xl bg-white/5 p-3">
-            <p className="text-zinc-400">Segments processed</p>
-            <p className="mt-1 text-lg font-semibold text-zinc-100">{studyPackage.meta.segments}</p>
-          </div>
-          <div className="rounded-xl bg-white/5 p-3">
-            <p className="text-zinc-400">Model</p>
-            <p className="mt-1 truncate text-sm font-semibold text-zinc-100">{studyPackage.meta.model}</p>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return <p className="text-sm leading-relaxed text-zinc-300">{studyPackage.highLevelSummary}</p>;
 }
 
 // ---------------------------------------------------------------------------

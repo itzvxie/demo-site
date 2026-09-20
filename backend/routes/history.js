@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { readSession } from "../auth/tokens.js";
-import { listHistoryForUser, findHistoryEntry, createHistoryEntry, deleteHistoryEntry } from "../db.js";
+import { listHistoryForUser, findHistoryEntry, createHistoryEntry, updateHistoryEntry, deleteHistoryEntry } from "../db.js";
 
 const router = Router();
 
@@ -61,6 +61,25 @@ router.post("/", async (req, res) => {
   } catch (error) {
     console.error("[novalis-ai] Failed to save history entry:", error.message);
     res.status(500).json({ error: "Couldn't save that to your history. Please try again." });
+  }
+});
+
+router.patch("/:id", async (req, res) => {
+  const claims = requireSession(req, res);
+  if (!claims) return;
+
+  const { studyPackage } = req.body ?? {};
+  if (!studyPackage) {
+    return res.status(400).json({ error: "studyPackage is required." });
+  }
+
+  try {
+    const entry = await updateHistoryEntry(req.params.id, claims.sub, studyPackage);
+    if (!entry) return res.status(404).json({ error: "That entry couldn't be found." });
+    res.json({ entry });
+  } catch (error) {
+    console.error("[novalis-ai] Failed to update history entry:", error.message);
+    res.status(500).json({ error: "Couldn't update that entry. Please try again." });
   }
 });
 

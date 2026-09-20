@@ -52,6 +52,13 @@ export function saveHistoryEntry({ subject, title, sourceType, studyPackage }) {
   });
 }
 
+export function updateHistoryEntry(id, studyPackage) {
+  return request(`/api/history/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ studyPackage }),
+  });
+}
+
 export function deleteHistoryEntry(id) {
   return request(`/api/history/${id}`, { method: "DELETE" });
 }
