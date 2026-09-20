@@ -45,10 +45,10 @@ export function fetchHistoryEntry(id) {
   return request(`/api/history/${id}`);
 }
 
-export function saveHistoryEntry({ subject, title, sourceType, studyPackage }) {
+export function saveHistoryEntry({ subject, title, sourceType, studyPackage, source }) {
   return request("/api/history", {
     method: "POST",
-    body: JSON.stringify({ subject, title, sourceType, studyPackage }),
+    body: JSON.stringify({ subject, title, sourceType, studyPackage, source }),
   });
 }
 

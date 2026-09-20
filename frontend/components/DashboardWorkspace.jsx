@@ -101,9 +101,10 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
 
   const [showChat, setShowChat] = useState(false);
   const [chatQuestion, setChatQuestion] = useState("");
+  const [chatSubject, setChatSubject] = useState(null);
   const [activeTab, setActiveTab] = useState("summary");
   const [currentHistoryId, setCurrentHistoryId] = useState(null);
-  const [chatSourceAvailable, setChatSourceAvailable] = useState(false);
+  const [chatSource, setChatSource] = useState(null);
   const [addingOutputId, setAddingOutputId] = useState(null);
   const [sketchOpen, setSketchOpen] = useState(false);
   const [examOpen, setExamOpen] = useState(false);
@@ -236,27 +237,26 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
     setIsGenerating(true);
     setErrorMessage(null);
 
-    try {
-      const payload = hasDocument
-        ? {
-            documentBase64: attachedFile.base64,
-            mimeType: attachedFile.mimeType,
-            fileName: attachedFile.name,
-            subject: activeSubject.label,
-            outputs: selectedOutputs,
-          }
-        : hasYoutube
-          ? { youtubeUrl: youtubeUrl.trim(), subject: activeSubject.label, outputs: selectedOutputs }
-          : { text: promptText.trim(), subject: activeSubject.label, outputs: selectedOutputs };
+    // Kept alongside the package so "+" can regenerate a missing output
+    // later without needing the original text/file/link still in the input
+    // box - and so it can be saved to History for the same reason.
+    const source = hasDocument
+      ? { documentBase64: attachedFile.base64, mimeType: attachedFile.mimeType, fileName: attachedFile.name }
+      : hasYoutube
+        ? { youtubeUrl: youtubeUrl.trim() }
+        : { text: promptText.trim() };
 
+    try {
+      const payload = { ...source, subject: activeSubject.label, outputs: selectedOutputs };
       const result = await processStudyMaterial(payload);
       const title =
         promptText.trim().slice(0, 80) || attachedFile?.name || (hasYoutube ? "YouTube video" : "Untitled");
 
       setStudyPackage(result);
       setChatQuestion(title);
+      setChatSubject(activeSubject);
       setActiveTab(result.highLevelSummary ? "summary" : selectedOutputs[0]);
-      setChatSourceAvailable(true);
+      setChatSource(source);
       setCurrentHistoryId(null);
       setShowChat(true);
 
@@ -265,11 +265,12 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
         title,
         sourceType: result.meta?.mode || "source",
         studyPackage: result,
+        source,
       })
         .then((res) => setCurrentHistoryId(res.entry.id))
         .catch(() => {
           // Non-fatal: the package is already showing, just won't appear in History
-          // (and "add more outputs" below won't be able to persist the addition).
+          // (and a later "+" addition here won't be able to persist there either).
         });
     } catch (error) {
       setErrorMessage(error.message || "Something went wrong. Please try again.");
@@ -283,10 +284,9 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
       .then((result) => {
         setStudyPackage(result.entry);
         setChatQuestion(entry.title);
+        setChatSubject(getSubject(SUBJECTS.find((s) => s.label === entry.subject)?.id));
         setActiveTab(result.entry.highLevelSummary ? "summary" : "flashcards");
-        // The original source material isn't saved, only the generated package,
-        // so there's nothing to regenerate from - "add more outputs" stays hidden.
-        setChatSourceAvailable(false);
+        setChatSource(result.source || null);
         setCurrentHistoryId(entry.id);
         setShowChat(true);
       })
@@ -298,25 +298,13 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
   }
 
   async function handleAddOutput(backendId, tabId) {
-    const hasDocument = Boolean(attachedFile?.base64);
-    const hasYoutube = youtubeUrl.trim().length > 0;
+    if (!chatSource) return;
 
     setAddingOutputId(backendId);
     setErrorMessage(null);
 
     try {
-      const payload = hasDocument
-        ? {
-            documentBase64: attachedFile.base64,
-            mimeType: attachedFile.mimeType,
-            fileName: attachedFile.name,
-            subject: activeSubject.label,
-            outputs: [backendId],
-          }
-        : hasYoutube
-          ? { youtubeUrl: youtubeUrl.trim(), subject: activeSubject.label, outputs: [backendId] }
-          : { text: promptText.trim(), subject: activeSubject.label, outputs: [backendId] };
-
+      const payload = { ...chatSource, subject: chatSubject?.label || activeSubject.label, outputs: [backendId] };
       const result = await processStudyMaterial(payload);
       const merged = {
         ...studyPackage,
@@ -364,11 +352,12 @@ export default function DashboardWorkspace({ user, setUser, onSignOut }) {
             <ChatView
               studyPackage={studyPackage}
               question={chatQuestion}
+              subject={chatSubject}
               activeTab={activeTab}
               setActiveTab={setActiveTab}
               onClose={closeChat}
               onStartExam={() => setExamOpen(true)}
-              canAddOutputs={chatSourceAvailable}
+              canAddOutputs={Boolean(chatSource)}
               addingOutputId={addingOutputId}
               onAddOutput={handleAddOutput}
             />
@@ -988,6 +977,7 @@ const CHAT_TAB_DEFS = [
 function ChatView({
   studyPackage,
   question,
+  subject,
   activeTab,
   setActiveTab,
   onClose,
@@ -1017,8 +1007,27 @@ function ChatView({
       transition={{ duration: 0.25 }}
       className="flex h-full flex-col"
     >
-      <div className="flex items-center justify-between pt-4">
-        <div className="flex items-center gap-1">
+      <div className="flex items-start justify-between gap-3 pt-5">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/20 to-fuchsia-500/20 text-base">
+            {subject?.emoji || "✨"}
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-zinc-100">{question}</p>
+            {subject?.label && <p className="text-xs text-zinc-500">{subject.label}</p>}
+          </div>
+        </div>
+        <button
+          type="button"
+          title="Back to workspace"
+          onClick={onClose}
+          className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition-colors hover:bg-white/5 hover:text-zinc-200"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="mt-4 flex items-center gap-1">
           {availableTabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -1084,15 +1093,6 @@ function ChatView({
               </AnimatePresence>
             </div>
           )}
-        </div>
-        <button
-          type="button"
-          title="Back to workspace"
-          onClick={onClose}
-          className="mb-1 text-zinc-500 hover:text-zinc-200"
-        >
-          <X className="h-4 w-4" />
-        </button>
       </div>
       <div className="h-px bg-white/10" />
 
