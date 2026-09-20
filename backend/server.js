@@ -13,10 +13,12 @@ import historyRouter from "./routes/history.js";
 // ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT || 4000;
-// Google AI Studio's free tier - no billing required. "-latest" tracks
-// Google's current recommended Flash model instead of pinning a version
-// that will eventually be retired.
-const GEMINI_MODEL = "gemini-flash-latest";
+// Google AI Studio's free tier - no billing required. Free-tier capacity is
+// shared and can get persistently overloaded on any single model, so we
+// fall back down this list (most to least preferred) rather than pinning
+// to just one.
+const GEMINI_MODEL_CANDIDATES = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"];
+const GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
 
 // A single chunk this size (~1,600 words) keeps each segment comfortably
 // inside the model's attention budget while still preserving whole
@@ -245,21 +247,32 @@ const OVERLOAD_RETRY_DELAY_MS = 1500;
 
 /**
  * The free tier shares capacity across everyone using it, so a transient
- * 503 ("model is currently experiencing high demand") is common and almost
- * always resolves within a couple of seconds - worth a couple of quick
- * retries before actually failing the request.
+ * 503 ("model is currently experiencing high demand") is common. Each
+ * candidate model gets a couple of quick retries, and if it's still
+ * overloaded after that we fall back to the next model in the list rather
+ * than failing outright - a differently-loaded model often has capacity
+ * even when the first choice doesn't.
  */
-async function generateContentWithRetry(params) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await genAI.models.generateContent(params);
-    } catch (error) {
-      const isOverloaded = error instanceof ApiError && error.status === 503;
-      if (!isOverloaded || attempt >= MAX_OVERLOAD_RETRIES) throw error;
-      console.warn(`[novalis-ai] Gemini overloaded (503), retrying (${attempt + 1}/${MAX_OVERLOAD_RETRIES})...`);
-      await sleep(OVERLOAD_RETRY_DELAY_MS * (attempt + 1));
+async function generateContentWithRetry(paramsWithoutModel) {
+  let lastError;
+  for (const model of GEMINI_MODEL_CANDIDATES) {
+    for (let attempt = 0; attempt <= MAX_OVERLOAD_RETRIES; attempt++) {
+      try {
+        return await genAI.models.generateContent({ ...paramsWithoutModel, model });
+      } catch (error) {
+        lastError = error;
+        const isOverloaded = error instanceof ApiError && error.status === 503;
+        if (!isOverloaded) throw error;
+        if (attempt < MAX_OVERLOAD_RETRIES) {
+          console.warn(`[novalis-ai] Gemini overloaded (503) on ${model}, retrying (${attempt + 1}/${MAX_OVERLOAD_RETRIES})...`);
+          await sleep(OVERLOAD_RETRY_DELAY_MS * (attempt + 1));
+        } else {
+          console.warn(`[novalis-ai] Gemini overloaded (503) on ${model}, falling back to the next model...`);
+        }
+      }
     }
   }
+  throw lastError;
 }
 
 /**
@@ -278,7 +291,6 @@ async function generateContentWithRetry(params) {
 async function researchQuestion(question) {
   try {
     const response = await generateContentWithRetry({
-      model: GEMINI_MODEL,
       contents: question,
       config: {
         systemInstruction: RESEARCH_SYSTEM_PROMPT,
@@ -417,7 +429,6 @@ app.post("/api/process-study-material", async (req, res) => {
     }
 
     const response = await generateContentWithRetry({
-      model: GEMINI_MODEL,
       contents: [{ role: "user", parts }],
       config: {
         systemInstruction: SYSTEM_PROMPT,
