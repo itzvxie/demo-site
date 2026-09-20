@@ -2,9 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { z } from "zod";
+import { GoogleGenAI, ApiError } from "@google/genai";
 import { fetchTranscript } from "youtube-transcript";
 import { migrate } from "./db.js";
 import authRouter from "./routes/auth.js";
@@ -15,7 +13,10 @@ import historyRouter from "./routes/history.js";
 // ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT || 4000;
-const CLAUDE_MODEL = "claude-opus-5";
+// Google AI Studio's free tier - no billing required. "-latest" tracks
+// Google's current recommended Flash model instead of pinning a version
+// that will eventually be retired.
+const GEMINI_MODEL = "gemini-flash-latest";
 
 // A single chunk this size (~1,600 words) keeps each segment comfortably
 // inside the model's attention budget while still preserving whole
@@ -28,7 +29,6 @@ const MAX_CHUNKS_PER_REQUEST = 40;
 // A short prompt (a question, or a bare topic) is treated as something to
 // research rather than a document to summarize - see `researchQuestion()`.
 const QUESTION_MODE_CHAR_THRESHOLD = 400;
-const WEB_SEARCH_TOOL = { type: "web_search_20260209", name: "web_search", max_uses: 5 };
 
 for (const key of ["DATABASE_URL", "SESSION_SECRET"]) {
   if (!process.env[key]) {
@@ -44,83 +44,97 @@ if (!process.env.RESEND_API_KEY) {
   console.warn("[novalis-ai] RESEND_API_KEY is not set - password reset emails will not be sent until it is configured.");
 }
 
-if (!process.env.ANTHROPIC_API_KEY) {
+if (!process.env.GEMINI_API_KEY) {
   console.warn(
-    "[novalis-ai] ANTHROPIC_API_KEY is not set. Requests to /api/process-study-material will fail until it is configured (see .env.example).",
+    "[novalis-ai] GEMINI_API_KEY is not set. Requests to /api/process-study-material will fail until it is configured (see .env.example). Get a free key at aistudio.google.com/apikey.",
   );
 }
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // ---------------------------------------------------------------------------
 // Structured output schema
 //
 // This is the contract the frontend dashboard renders against. Passing it
-// through `output_config.format` makes Claude's response provably conform
-// to this shape at the API level (constrained decoding), rather than hoping
-// a system prompt instruction is obeyed.
+// through `responseJsonSchema` makes Gemini's response provably conform to
+// this shape at the API level (constrained decoding), rather than hoping a
+// system prompt instruction is obeyed.
 // ---------------------------------------------------------------------------
 
 // Each requestable output maps to one field of the full schema. The student
 // picks which outputs they want before generating (see the frontend's
-// generate-method picker), and we only ask Claude to produce those fields -
+// generate-method picker), and we only ask Gemini to produce those fields -
 // cheaper, faster, and the response naturally only contains what was asked
-// for instead of always paying for all four.
-const OUTPUT_FIELD_SCHEMAS = {
+// for instead of always generating all four.
+const OUTPUT_FIELD_JSON_SCHEMAS = {
   notes: {
-    highLevelSummary: z
-      .string()
-      .describe(
-        "A 3-sentence conversational breakdown simplifying the core concept like talking to a friend.",
-      ),
+    highLevelSummary: {
+      type: "string",
+      description: "A 3-sentence conversational breakdown simplifying the core concept like talking to a friend.",
+    },
   },
   flashcards: {
-    flashcards: z
-      .array(
-        z.object({
-          front: z.string().describe("Highly targeted active recall question."),
-          back: z.string().describe("Precise, punchy answer."),
-        }),
-      )
-      .min(6)
-      .max(14),
+    flashcards: {
+      type: "array",
+      minItems: 6,
+      maxItems: 14,
+      items: {
+        type: "object",
+        properties: {
+          front: { type: "string", description: "Highly targeted active recall question." },
+          back: { type: "string", description: "Precise, punchy answer." },
+        },
+        required: ["front", "back"],
+      },
+    },
   },
   quiz: {
-    quiz: z
-      .array(
-        z.object({
-          question: z.string().describe("Multiple choice question phrase."),
-          options: z.array(z.string()).length(4),
-          correctAnswerIndex: z.number().int().min(0).max(3),
-        }),
-      )
-      .min(4)
-      .max(10),
+    quiz: {
+      type: "array",
+      minItems: 4,
+      maxItems: 10,
+      items: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "Multiple choice question phrase." },
+          options: { type: "array", items: { type: "string" }, minItems: 4, maxItems: 4 },
+          correctAnswerIndex: { type: "integer", minimum: 0, maximum: 3 },
+        },
+        required: ["question", "options", "correctAnswerIndex"],
+      },
+    },
   },
   podcast: {
-    podcastScript: z
-      .array(
-        z.object({
-          speaker: z.enum(["Host Harry (Energetic)", "Host Sarah (Analytical)"]),
-          text: z.string(),
-        }),
-      )
-      .min(6)
-      .max(20),
+    podcastScript: {
+      type: "array",
+      minItems: 6,
+      maxItems: 20,
+      items: {
+        type: "object",
+        properties: {
+          speaker: { type: "string", enum: ["Host Harry (Energetic)", "Host Sarah (Analytical)"] },
+          text: { type: "string" },
+        },
+        required: ["speaker", "text"],
+      },
+    },
   },
 };
 
-const ALL_OUTPUTS = Object.keys(OUTPUT_FIELD_SCHEMAS);
+const ALL_OUTPUTS = Object.keys(OUTPUT_FIELD_JSON_SCHEMAS);
 
-function buildStudyPackageSchema(requestedOutputs) {
+function buildResponseJsonSchema(requestedOutputs) {
   const validOutputs = Array.isArray(requestedOutputs)
-    ? requestedOutputs.filter((o) => OUTPUT_FIELD_SCHEMAS[o])
+    ? requestedOutputs.filter((o) => OUTPUT_FIELD_JSON_SCHEMAS[o])
     : [];
   const outputs = validOutputs.length ? validOutputs : ALL_OUTPUTS;
 
-  const shape = {};
-  for (const output of outputs) Object.assign(shape, OUTPUT_FIELD_SCHEMAS[output]);
-  return { schema: z.object(shape), outputs };
+  const properties = {};
+  for (const output of outputs) Object.assign(properties, OUTPUT_FIELD_JSON_SCHEMAS[output]);
+  return {
+    schema: { type: "object", properties, required: Object.keys(properties) },
+    outputs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +232,7 @@ Return only the structured study package. Do not include any commentary outside 
 
 const RESEARCH_SYSTEM_PROMPT = `You are a meticulous research assistant preparing background notes for a study-content generator. A student has asked a short question or named a topic - there is no source document, so you must research it yourself.
 
-Write a thorough, accurate, well-organized set of notes that fully answers it: key facts, dates, causes, mechanisms, and consequences as relevant to the topic. Use the web_search tool whenever you are not fully certain of a specific fact, date, figure, or anything that may have changed recently - do not guess or rely on shaky memory for specifics you can verify.
+Write a thorough, accurate, well-organized set of notes that fully answers it: key facts, dates, causes, mechanisms, and consequences as relevant to the topic. Use the Google Search tool whenever you are not fully certain of a specific fact, date, figure, or anything that may have changed recently - do not guess or rely on shaky memory for specifics you can verify.
 
 Write in plain prose paragraphs, not JSON, not bullet points. Be comprehensive but precise - no filler, no hedging, no meta-commentary about being an AI. These notes will be fed directly into another step that turns them into a summary, flashcards, a quiz and a podcast script, so make sure every fact a good study package would need is actually present.`;
 
@@ -229,23 +243,28 @@ Write in plain prose paragraphs, not JSON, not bullet points. Be comprehensive b
  * that are in the supplied material" rule in the main system prompt fully
  * intact and safe - the researched notes simply become that material,
  * instead of quietly loosening the anti-hallucination rule for this path.
+ *
+ * Search grounding runs under its own quota/availability separate from
+ * plain generation, so a failure here degrades gracefully (empty notes)
+ * rather than failing the whole request - the packaging step already
+ * handles the "no research came back" case.
  */
 async function researchQuestion(question) {
-  const response = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 4000,
-    system: RESEARCH_SYSTEM_PROMPT,
-    tools: [WEB_SEARCH_TOOL],
-    messages: [{ role: "user", content: question }],
-  });
-
-  const notes = response.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text)
-    .join("\n\n")
-    .trim();
-
-  return notes;
+  try {
+    const response = await genAI.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: question,
+      config: {
+        systemInstruction: RESEARCH_SYSTEM_PROMPT,
+        tools: [{ googleSearch: {} }],
+        maxOutputTokens: 4000,
+      },
+    });
+    return (response.text || "").trim();
+  } catch (error) {
+    console.error("[novalis-ai] Research pre-pass failed, continuing without it:", error.message);
+    return "";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -272,7 +291,7 @@ app.use(express.urlencoded({ extended: true })); // Apple's Sign In callback pos
 app.use(cookieParser());
 
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", model: CLAUDE_MODEL });
+  res.json({ status: "ok", model: GEMINI_MODEL });
 });
 
 app.use("/api/auth", authRouter);
@@ -281,6 +300,10 @@ app.use("/api/history", historyRouter);
 const SUPPORTED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 app.post("/api/process-study-material", async (req, res) => {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: "AI service is misconfigured (missing GEMINI_API_KEY)." });
+  }
+
   try {
     const { text, documentBase64, mimeType, fileName, subject, youtubeUrl, outputs } = req.body ?? {};
 
@@ -308,30 +331,23 @@ app.post("/api/process-study-material", async (req, res) => {
       });
     }
 
-    const { schema: studyPackageSchema, outputs: resolvedOutputs } = buildStudyPackageSchema(outputs);
+    const { schema: responseJsonSchema, outputs: resolvedOutputs } = buildResponseJsonSchema(outputs);
 
-    const userContent = [];
+    const parts = [];
     let segmentCount = 0;
     let mode = "document";
 
     if (documentBase64) {
       if (mimeType === "application/pdf") {
-        userContent.push({
-          type: "document",
-          source: { type: "base64", media_type: "application/pdf", data: documentBase64 },
-        });
+        parts.push({ inlineData: { mimeType: "application/pdf", data: documentBase64 } });
       } else if (SUPPORTED_IMAGE_TYPES.has(mimeType)) {
-        userContent.push({
-          type: "image",
-          source: { type: "base64", media_type: mimeType, data: documentBase64 },
-        });
+        parts.push({ inlineData: { mimeType, data: documentBase64 } });
       } else {
         return res.status(400).json({
           error: "documentBase64 must be a PDF (application/pdf) or an image (image/jpeg, image/png, image/gif, image/webp). For plain text, use the `text` field instead.",
         });
       }
-      userContent.push({
-        type: "text",
+      parts.push({
         text: `Process the attached ${mimeType === "application/pdf" ? "document" : "image"}${
           sourceFileName ? ` ("${sourceFileName}")` : ""
         }${subject ? ` for the subject: ${subject}.` : "."} Build the full study package described in your instructions.`,
@@ -350,8 +366,7 @@ app.post("/api/process-study-material", async (req, res) => {
         mode = "question";
         const researchNotes = await researchQuestion(trimmedText);
         segmentCount = 1;
-        userContent.push({
-          type: "text",
+        parts.push({
           text: `${subject ? `Subject: ${subject}\n` : ""}The student asked: "${trimmedText}"\n\nHere is researched background information to answer it accurately:\n\n${
             researchNotes || "(No additional research came back - answer from the question itself as best you can.)"
           }\n\nBuild the full study package described in your instructions, directly answering the student's question.`,
@@ -367,8 +382,7 @@ app.post("/api/process-study-material", async (req, res) => {
         segmentCount = chunks.length;
 
         const segmentedContext = buildSegmentedContext(chunks);
-        userContent.push({
-          type: "text",
+        parts.push({
           text: `${
             subject ? `Subject: ${subject}\n` : ""
           }${sourceFileName ? `Source: ${sourceFileName}\n` : ""}Below is the study material, already segmented by the retrieval pipeline:\n\n${segmentedContext}\n\nBuild the full study package described in your instructions.`,
@@ -376,54 +390,55 @@ app.post("/api/process-study-material", async (req, res) => {
       }
     }
 
-    const response = await anthropic.messages.parse({
-      model: CLAUDE_MODEL,
-      max_tokens: 8000,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: userContent }],
-      output_config: {
-        format: zodOutputFormat(studyPackageSchema),
-        effort: "medium",
+    const response = await genAI.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: [{ role: "user", parts }],
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        responseMimeType: "application/json",
+        responseJsonSchema,
+        maxOutputTokens: 8000,
       },
     });
 
-    if (!response.parsed_output) {
+    let parsedOutput;
+    try {
+      parsedOutput = JSON.parse(response.text ?? "");
+    } catch {
+      parsedOutput = null;
+    }
+
+    if (!parsedOutput) {
       return res.status(502).json({
-        error: "Claude returned a response that could not be parsed into the expected study package shape. Please try again.",
+        error: "The AI returned a response that could not be parsed into the expected study package shape. Please try again.",
       });
     }
 
     return res.json({
-      ...response.parsed_output,
+      ...parsedOutput,
       meta: {
-        model: response.model,
+        model: response.modelVersion || GEMINI_MODEL,
         mode,
         segments: segmentCount,
         outputs: resolvedOutputs,
-        inputTokens: response.usage?.input_tokens ?? null,
-        outputTokens: response.usage?.output_tokens ?? null,
+        inputTokens: response.usageMetadata?.promptTokenCount ?? null,
+        outputTokens: response.usageMetadata?.candidatesTokenCount ?? null,
       },
     });
   } catch (error) {
-    if (error instanceof Anthropic.AuthenticationError) {
-      console.error("[novalis-ai] Anthropic authentication failed:", error.message);
-      return res.status(500).json({ error: "AI service is misconfigured (invalid API key)." });
-    }
-    if (error instanceof Anthropic.RateLimitError) {
-      console.error("[novalis-ai] Anthropic rate limit hit:", error.message);
-      return res.status(429).json({ error: "The AI is a little overloaded right now. Please try again in a moment." });
-    }
-    if (error instanceof Anthropic.BadRequestError) {
-      console.error("[novalis-ai] Anthropic rejected the request:", error.message);
-      if (error.message?.includes("credit balance")) {
-        return res.status(500).json({
-          error: "The AI service's account is out of credits. Add credits at console.anthropic.com under Plans & Billing, then try again.",
+    if (error instanceof ApiError) {
+      console.error("[novalis-ai] Gemini API error:", error.status, error.message);
+      if (error.status === 401 || error.status === 403) {
+        return res.status(500).json({ error: "AI service is misconfigured (invalid API key)." });
+      }
+      if (error.status === 429) {
+        return res.status(429).json({
+          error: "You've hit the free daily limit for the AI. It resets after a short wait - try again in a few minutes.",
         });
       }
-      return res.status(400).json({ error: "The study material could not be processed as sent. Try a shorter excerpt." });
-    }
-    if (error instanceof Anthropic.APIError) {
-      console.error("[novalis-ai] Anthropic API error:", error.status, error.message);
+      if (error.status === 400) {
+        return res.status(400).json({ error: "The study material could not be processed as sent. Try a shorter excerpt." });
+      }
       return res.status(502).json({ error: "The AI service returned an error. Please try again." });
     }
 
