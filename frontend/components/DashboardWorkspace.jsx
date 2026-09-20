@@ -1393,36 +1393,44 @@ function FlashcardReview({ flashcards }) {
 
       <div className="flex flex-1 items-center justify-center py-4 [perspective:1400px]">
         <AnimatePresence mode="wait">
-          <motion.button
+          <motion.div
             key={queue[0]}
-            type="button"
-            onClick={() => setFlipped((f) => !f)}
             initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -12 }}
             transition={{ duration: 0.2 }}
-            className="relative min-h-[300px] w-full [transform-style:preserve-3d]"
-            style={{
-              transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
-              transition: "transform 0.5s cubic-bezier(0.4, 0.2, 0.2, 1)",
-            }}
+            className="w-full"
           >
-            <div
-              className="absolute inset-0 flex flex-col items-center justify-center rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] p-8 text-center shadow-xl [backface-visibility:hidden]"
+            {/*
+              Plain <button>, not motion.button: Framer Motion composes its
+              own `transform` from the x/y/scale/rotate values above and
+              overwrites anything set via the style prop on a motion
+              component, which silently ate the rotateY flip below.
+            */}
+            <button
+              type="button"
+              onClick={() => setFlipped((f) => !f)}
+              className="relative min-h-[300px] w-full [transform-style:preserve-3d]"
+              style={{
+                transform: flipped ? "rotateY(180deg)" : "rotateY(0deg)",
+                transition: "transform 0.5s cubic-bezier(0.4, 0.2, 0.2, 1)",
+              }}
             >
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300/80">Question</p>
-              <p className="mt-5 text-xl font-medium leading-relaxed text-zinc-100">{currentCard.front}</p>
-              <p className="mt-6 text-[11px] text-zinc-600">Tap to reveal the answer</p>
-            </div>
-            <div
-              className="absolute inset-0 flex flex-col items-center justify-center rounded-3xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/10 to-white/[0.02] p-8 text-center shadow-xl [backface-visibility:hidden]"
-              style={{ transform: "rotateY(180deg)" }}
-            >
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300/80">Answer</p>
-              <p className="mt-5 text-xl font-medium leading-relaxed text-zinc-100">{currentCard.back}</p>
-              <p className="mt-6 text-[11px] text-zinc-600">Tap to flip back</p>
-            </div>
-          </motion.button>
+              <div className="absolute inset-0 flex flex-col items-center justify-center rounded-3xl border border-white/10 bg-gradient-to-br from-white/[0.07] to-white/[0.02] p-8 text-center shadow-xl [backface-visibility:hidden]">
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-indigo-300/80">Question</p>
+                <p className="mt-5 text-xl font-medium leading-relaxed text-zinc-100">{currentCard.front}</p>
+                <p className="mt-6 text-[11px] text-zinc-600">Tap to reveal the answer</p>
+              </div>
+              <div
+                className="absolute inset-0 flex flex-col items-center justify-center rounded-3xl border border-emerald-400/20 bg-gradient-to-br from-emerald-500/10 to-white/[0.02] p-8 text-center shadow-xl [backface-visibility:hidden]"
+                style={{ transform: "rotateY(180deg)" }}
+              >
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300/80">Answer</p>
+                <p className="mt-5 text-xl font-medium leading-relaxed text-zinc-100">{currentCard.back}</p>
+                <p className="mt-6 text-[11px] text-zinc-600">Tap to flip back</p>
+              </div>
+            </button>
+          </motion.div>
         </AnimatePresence>
       </div>
 

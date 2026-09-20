@@ -235,13 +235,18 @@ function sleep(ms) {
 const MAX_OVERLOAD_RETRIES = 2;
 const OVERLOAD_RETRY_DELAY_MS = 1500;
 
+// 503 is Google's documented "model overloaded" signal, but the free tier
+// also throws plain 500s ("internal error encountered") under the same
+// shared-capacity pressure - both are transient and worth retrying/falling
+// back on, unlike a real 400/401/403/429 which retrying can't fix.
+const RETRYABLE_STATUSES = new Set([500, 503]);
+
 /**
  * The free tier shares capacity across everyone using it, so a transient
- * 503 ("model is currently experiencing high demand") is common. Each
- * candidate model gets a couple of quick retries, and if it's still
- * overloaded after that we fall back to the next model in the list rather
- * than failing outright - a differently-loaded model often has capacity
- * even when the first choice doesn't.
+ * overload is common. Each candidate model gets a couple of quick retries,
+ * and if it's still failing after that we fall back to the next model in
+ * the list rather than failing outright - a differently-loaded model often
+ * has capacity even when the first choice doesn't.
  */
 async function generateContentWithRetry(paramsWithoutModel) {
   let lastError;
@@ -251,13 +256,13 @@ async function generateContentWithRetry(paramsWithoutModel) {
         return await genAI.models.generateContent({ ...paramsWithoutModel, model });
       } catch (error) {
         lastError = error;
-        const isOverloaded = error instanceof ApiError && error.status === 503;
-        if (!isOverloaded) throw error;
+        const isRetryable = error instanceof ApiError && RETRYABLE_STATUSES.has(error.status);
+        if (!isRetryable) throw error;
         if (attempt < MAX_OVERLOAD_RETRIES) {
-          console.warn(`[novalis-ai] Gemini overloaded (503) on ${model}, retrying (${attempt + 1}/${MAX_OVERLOAD_RETRIES})...`);
+          console.warn(`[novalis-ai] Gemini ${error.status} on ${model}, retrying (${attempt + 1}/${MAX_OVERLOAD_RETRIES})...`);
           await sleep(OVERLOAD_RETRY_DELAY_MS * (attempt + 1));
         } else {
-          console.warn(`[novalis-ai] Gemini overloaded (503) on ${model}, falling back to the next model...`);
+          console.warn(`[novalis-ai] Gemini ${error.status} on ${model}, falling back to the next model...`);
         }
       }
     }
@@ -468,12 +473,12 @@ app.post("/api/process-study-material", async (req, res) => {
       if (error.status === 400) {
         return res.status(400).json({ error: "The study material could not be processed as sent. Try a shorter excerpt." });
       }
-      if (error.status === 503) {
+      if (error.status === 500 || error.status === 503) {
         return res.status(503).json({
-          error: "The free AI model is briefly overloaded on Google's side (already retried a couple of times). Please try again in a moment.",
+          error: "The free AI model is briefly overloaded on Google's side (already retried a couple of times across models). Please try again in a moment.",
         });
       }
-      return res.status(502).json({ error: "The AI service returned an error. Please try again." });
+      return res.status(502).json({ error: `The AI service returned an error (${error.status}). Please try again.` });
     }
 
     console.error("[novalis-ai] Unexpected error processing study material:", error);
